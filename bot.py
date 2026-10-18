@@ -385,7 +385,7 @@ async def cmd_start(message: Message) -> None:
         "Выберите действие:",
         reply_markup=main_menu(),
     )
-    await message.answer("Меню навигации — внизу экрана 👇", reply_markup=nav_menu())
+
 
 
 @router.message(Command("buy"))
