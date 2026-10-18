@@ -1,0 +1,12 @@
+version: "3.9"
+
+services:
+  wdtt-bot:
+    build: .
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8080:8080"
