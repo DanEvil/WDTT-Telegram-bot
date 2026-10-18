@@ -274,6 +274,40 @@ setup_daily_reboot() {
     reboot_timer_install "$t"
 }
 
+# ---------- автозапуск бота при перезагрузке ----------
+
+setup_autostart() {
+    # Docker включим в загрузку + системd-сервис, который при старте сервера
+    # поднимает контейнер (restart: unless-stopped не сработает, если контейнер
+    # был остановлен вручную до ребута).
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "systemd не найден — автозапуск пропускаю."
+        return 0
+    fi
+    $SUDO systemctl enable docker >/dev/null 2>&1 || true
+    cat <<UNIT | $SUDO tee /etc/systemd/system/wdtt-bot.service >/dev/null
+[Unit]
+Description=WDTT Telegram bot (docker compose)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=$PROJECT_DIR
+ExecStart=$COMPOSE up -d
+ExecStop=$COMPOSE stop
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    $SUDO systemctl daemon-reload
+    $SUDO systemctl enable wdtt-bot.service >/dev/null
+    echo "Автозапуск настроен: Docker включён в загрузку, wdtt-bot.service поднимает контейнер при старте сервера."
+    echo "Проверка: systemctl status wdtt-bot.service"
+}
+
 # ---------- основной сценарий ----------
 
 if [ "$CONFIGURE_ONLY" = "1" ]; then
@@ -337,6 +371,7 @@ setup_daily_reboot
 
 echo "--- 4. Сборка и запуск контейнера ---"
 $COMPOSE up -d --build
+setup_autostart
 
 echo "-----------------------------------------------------------"
 echo "РАЗВЁРТЫВАНИЕ ЗАВЕРШЕНО!"
