@@ -93,7 +93,7 @@ class AdminStates(StatesGroup):
 PLAN_BUTTONS: dict[str, str] = {}
 
 NAV_BUTTONS = {
-    "🎁 Пробный период", "🛒 Купить", "👤 Профиль", "👥 Рефералы",
+    "🎁 Пробный период", "🛒 Купить", "👤 Моя подписка", "👥 Рефералы",
     "📖 Инструкция", "❓ Помощь", "🏠 Главное меню", "📊 Статистика",
     "👥 Клиенты", "⛔ Отозвать", "➕ Продлить", "🖥 Серверы",
     "➕ Добавить сервер", "🗑 Удалить сервер",
@@ -103,7 +103,7 @@ NAV_BUTTONS = {
 INSTRUCTION_TEXT = (
     "📖 <b>Подключение к WDTT</b>\n\n"
     "1. Установите клиент для вашей платформы.\n"
-    "2. Скопируйте вашу ссылку <code>wdtt://</code> (кнопка 👤 Профиль).\n"
+    "2. Скопируйте вашу ссылку <code>wdtt://</code> (кнопка 👤 Моя подписка).\n"
     "3. Вставьте её в клиент и подключитесь — устройства привяжутся "
     "автоматически (до лимита вашего тарифа).\n\n"
     "🪟 <b>Windows</b> — установите <b>WDTT для Windows</b> или <b>PWDTT</b> "
@@ -319,22 +319,35 @@ async def grant_referral_reward(referred_id: int) -> None:
 
 # ---------- клавиатуры ----------
 
-def nav_menu(is_admin_user: bool) -> ReplyKeyboardMarkup:
-    rows = [
-        [KeyboardButton(text="🎁 Пробный период"), KeyboardButton(text="🛒 Купить")],
-        [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="👥 Рефералы")],
+async def nav_menu(telegram_id: int, is_admin_user: bool | None = None) -> ReplyKeyboardMarkup:
+    """Главное меню. Кнопка «Пробный период» появляется, только если пробник
+    ещё не использован; админские кнопки спрятаны за «⚙️ Админка»."""
+    if is_admin_user is None:
+        is_admin_user = is_admin(telegram_id)
+    rows = []
+    if not await has_used_trial(telegram_id):
+        rows.append([KeyboardButton(text="🎁 Пробный период"), KeyboardButton(text="🛒 Купить")])
+    else:
+        rows.append([KeyboardButton(text="🛒 Купить")])
+    rows += [
+        [KeyboardButton(text="👤 Моя подписка"), KeyboardButton(text="👥 Рефералы")],
         [KeyboardButton(text="📖 Инструкция"), KeyboardButton(text="❓ Помощь")],
-        [KeyboardButton(text="🏠 Главное меню")],
     ]
     if is_admin_user:
-        rows += [
-            [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="👥 Клиенты")],
-            [KeyboardButton(text="⛔ Отозвать"), KeyboardButton(text="➕ Продлить")],
-            [KeyboardButton(text="🖥 Серверы"), KeyboardButton(text="➕ Добавить сервер")],
-            [KeyboardButton(text="🗑 Удалить сервер")],
-            [KeyboardButton(text="🗂 Тарифы"), KeyboardButton(text="➕ Добавить тариф")],
-            [KeyboardButton(text="✏️ Изменить тариф"), KeyboardButton(text="🗑 Удалить тариф")],
-        ]
+        rows[-1].append(KeyboardButton(text="⚙️ Админка"))
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def admin_menu() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="👥 Клиенты")],
+        [KeyboardButton(text="⛔ Отозвать"), KeyboardButton(text="➕ Продлить")],
+        [KeyboardButton(text="🖥 Серверы"), KeyboardButton(text="➕ Добавить сервер")],
+        [KeyboardButton(text="🗑 Удалить сервер")],
+        [KeyboardButton(text="🗂 Тарифы"), KeyboardButton(text="➕ Добавить тариф")],
+        [KeyboardButton(text="✏️ Изменить тариф"), KeyboardButton(text="🗑 Удалить тариф")],
+        [KeyboardButton(text="🏠 Главное меню")],
+    ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
@@ -405,7 +418,7 @@ async def profile_text(telegram_id: int) -> str:
     if section:
         lines.append(f"\n🔗 Ссылки для подключения:\n{section}")
     else:
-        lines.append("\n🔗 Ссылка временно недоступна — попробуйте позже (кнопка 👤 Профиль).")
+        lines.append("\n🔗 Ссылка временно недоступна — попробуйте позже (кнопка 👤 Моя подписка).")
     return "\n".join(lines)
 
 
@@ -425,7 +438,7 @@ async def cmd_start(message: Message) -> None:
         "Здесь можно купить подписку (оплата через ЮKassa), активировать "
         "бесплатный пробный период и получить ссылку для подключения.\n\n"
         "Выберите действие:",
-        reply_markup=nav_menu(is_admin(message.from_user.id)),
+        reply_markup=await nav_menu(message.from_user.id),
     )
 
 
@@ -448,7 +461,7 @@ async def nav_buy(message: Message) -> None:
     await message.answer("Выберите тариф:", reply_markup=plans_reply_keyboard(await list_plans()))
 
 
-@router.message(F.text == "👤 Профиль", StateFilter(None))
+@router.message(F.text == "👤 Моя подписка", StateFilter(None))
 async def nav_profile(message: Message) -> None:
     await message.answer(await profile_text(message.from_user.id))
 
@@ -470,7 +483,14 @@ async def nav_help(message: Message) -> None:
 
 @router.message(F.text == "🏠 Главное меню", StateFilter(None))
 async def nav_main(message: Message) -> None:
-    await message.answer("Главное меню:", reply_markup=nav_menu(is_admin(message.from_user.id)))
+    await message.answer("Главное меню:", reply_markup=await nav_menu(message.from_user.id))
+
+
+@router.message(F.text == "⚙️ Админка", StateFilter(None))
+async def nav_admin_menu(message: Message) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer("Админ-панель:", reply_markup=admin_menu())
 
 
 @router.message(F.text == "🎁 Пробный период", StateFilter(None))
@@ -544,7 +564,7 @@ async def nav_plan(message: Message) -> None:
 async def nav_button_during_state(message: Message, state: FSMContext) -> None:
     await state.clear()
     if message.text == "🏠 Главное меню":
-        await message.answer("Главное меню:", reply_markup=nav_menu(is_admin(message.from_user.id)))
+        await message.answer("Главное меню:", reply_markup=await nav_menu(message.from_user.id))
     else:
         await message.answer("Действие отменено. Нажмите кнопку ещё раз.")
 
