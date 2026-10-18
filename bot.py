@@ -75,11 +75,24 @@ router = Router()
 # ---- очистка чата при переходе между пунктами меню ----
 
 _chat_log: dict[int, deque[int]] = defaultdict(lambda: deque(maxlen=100))
+# reply-клавиатура, которую надо подставить к первому ответу после чистки чата
+_pending_kb: dict[int, ReplyKeyboardMarkup] = {}
+
+ADMIN_NAV_BUTTONS = {
+    "📊 Статистика", "👥 Клиенты", "⛔ Отозвать", "➕ Продлить", "🎁 Подарить",
+    "🖥 Серверы", "➕ Добавить сервер", "🗑 Удалить сервер",
+    "🗂 Тарифы", "➕ Добавить тариф", "✏️ Изменить тариф", "🗑 Удалить тариф",
+    "⚙️ Админка",
+}
 
 
 def _track(method):
     @functools.wraps(method)
     async def inner(self, *args, **kwargs):
+        kb = _pending_kb.get(self.chat.id)
+        if kb is not None and kwargs.get("reply_markup") is None:
+            kwargs["reply_markup"] = kb
+        _pending_kb.pop(self.chat.id, None)
         sent = await method(self, *args, **kwargs)
         if isinstance(sent, Message):
             _chat_log[self.chat.id].append(sent.message_id)
@@ -105,7 +118,14 @@ async def clear_chat_on_nav(handler, event, data):
             except Exception:
                 pass
         log.clear()
-        return await handler(event, data)
+        if text in ADMIN_NAV_BUTTONS and is_admin(event.from_user.id):
+            _pending_kb[chat_id] = admin_menu()
+        else:
+            _pending_kb[chat_id] = await nav_menu(event.from_user.id)
+        try:
+            return await handler(event, data)
+        finally:
+            _pending_kb.pop(chat_id, None)
     _chat_log[chat_id].append(event.message_id)
     return await handler(event, data)
 
