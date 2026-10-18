@@ -82,13 +82,13 @@ async def sub_page(request):
     if pw not in users:
         return web.Response(status=404, text="not found")
     pw = pw
-    # хэш есть в записи панели, но панель отдала colon-ссылки без hash
+    # хэш есть в записи панели, но панель отдала colon-ссылки с плейсхолдером VK_HASH
     body = (
         '<textarea id="subscription-links" style="display:none">'
         "wdtt://universal-json\n"
-        "wdtt://94.156.114.115:56000:56001::userpass-x:#VK Turn\n"
-        "wdtt://94.156.114.115:56000:56001:9000:userpass-x:\n"
-        "wdtt://94.156.114.115:56000:56001::userpass-x:#WDTT\n"
+        "wdtt://94.156.114.115:56000:56001::userpass-x:VK_HASH#VK Turn\n"
+        "wdtt://94.156.114.115:56000:56001:9000:userpass-x:VK_HASH\n"
+        "wdtt://94.156.114.115:56000:56001::userpass-x:VK_HASH#WDTT\n"
         "</textarea>\n"
         '<textarea id="subscription-link-titles" style="display:none">'
         "WDTT JSON\n"
@@ -204,6 +204,23 @@ async def test_wdtt_client(base_url):
     assert pl["ios"] == "wdtt://94.156.114.115:56000:56001::userpass-x:vkhash1#VK Turn", pl["ios"]
     assert pl["android"] == "wdtt://94.156.114.115:56000:56001:9000:userpass-x:vkhash1,vkhash2", pl["android"]
     assert all(x != "wdtt://universal-json" for x in pl.values())
+
+    # универсальная JSON-ссылка: hash отсутствует/плейсхолдер -> вписываем
+    import base64 as _b64u
+    import json as _jsonu
+    payload = {"ps": "WDTT", "add": "1.2.3.4", "dtls": 56000, "pass": pw}
+    uni = "wdtt://" + _b64u.b64encode(_jsonu.dumps(payload).encode()).decode("ascii")
+    patched = c._ensure_payload_hash(uni, "vk9")
+    obj = _jsonu.loads(_b64u.b64decode(patched.split("wdtt://", 1)[1]))
+    assert obj["hash"] == "vk9" and obj["pass"] == pw and obj["add"] == "1.2.3.4"
+    payload2 = {"ps": "WDTT", "add": "1.2.3.4", "pass": pw, "hash": "VK_HASH"}
+    uni2 = "wdtt://" + _b64u.b64encode(_jsonu.dumps(payload2).encode()).decode("ascii")
+    obj2 = _jsonu.loads(_b64u.b64decode(c._ensure_payload_hash(uni2, "vk9").split("wdtt://", 1)[1]))
+    assert obj2["hash"] == "vk9"
+    # реальный хэш в payload не трогается
+    payload3 = {"ps": "WDTT", "add": "1.2.3.4", "pass": pw, "hash": "real"}
+    uni3 = "wdtt://" + _b64u.b64encode(_jsonu.dumps(payload3).encode()).decode("ascii")
+    assert c._ensure_payload_hash(uni3, "vk9") == uni3
 
     # update_user: поля применяются
     await c.update_user(old_password=pw, expires_at=now + 7200, total_gb=100, max_devices=3)

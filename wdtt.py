@@ -18,6 +18,8 @@
   клиент всегда передаёт expires_at / total_gb / max_devices / active явно.
 """
 
+import base64
+import json
 import logging
 import re
 from typing import Any
@@ -165,11 +167,49 @@ class WdttClient:
     async def find_link(self, password: str) -> str | None:
         """Готовая ссылка wdtt:// пользователя с данным паролем.
 
-        Ссылка из панели универсальна для всех клиентов (устройства
-        привязываются автоматически до лимита max_devices).
+        Если в payload ссылки нет hash (или стоит панельный плейсхолдер
+        'VK_HASH'), вписываем vk_hash из записи пользователя.
         """
         u = await self.get_user_info(password)
-        return u.get("link") if u else None
+        if not u:
+            return None
+        link = u.get("link")
+        if link:
+            link = self._ensure_payload_hash(str(link), str(u.get("vk_hash") or ""))
+        return link
+
+    @staticmethod
+    def _ensure_payload_hash(link: str, vk_hash: str) -> str:
+        """Прописывает vk_hash в универсальную wdtt:// (base64 JSON payload).
+
+        Ссылку собирает панель; ключ hash попадает туда только при наличии
+        VK-хэша у пользователя. Если ключа нет (или это плейсхолдер) и хэш
+        известен — декодируем, вписываем и пересобираем ссылку. При ошибке
+        декодирования возвращаем исходную ссылку без изменений.
+        """
+        if not link or not link.startswith("wdtt://"):
+            return link
+        hashes = WdttClient._clean_hash_pieces(vk_hash)
+        if not hashes:
+            return link
+        import base64
+        import json
+        b64 = link[len("wdtt://"):]
+        try:
+            data = base64.b64decode(b64 + "=" * (-len(b64) % 4)).decode("utf-8")
+            obj = json.loads(data)
+            if not isinstance(obj, dict):
+                return link
+        except Exception:
+            return link
+        existing = WdttClient._clean_hash_pieces(str(obj.get("hash") or ""))
+        if existing:
+            return link
+        obj["hash"] = ",".join(hashes)
+        encoded = base64.b64encode(
+            json.dumps(obj, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii")
+        return "wdtt://" + encoded
 
     async def platform_links(self, password: str) -> dict[str, str]:
         """Ссылки под мобильные платформы из панели.
@@ -214,28 +254,42 @@ class WdttClient:
         return result
 
     @staticmethod
+    def _clean_hash_pieces(value: str) -> list[str]:
+        """Кусочки хэша из colon-ссылки: пустые и плейсхолдер 'VK_HASH' отбрасываются.
+
+        Панель без VK-вызова вписывает в поле хэша литерал "VK_HASH"
+        (pkg/vkhash.Placeholder) — считать его реальным хэшем нельзя.
+        """
+        out = []
+        for piece in value.split(","):
+            piece = piece.strip()
+            if piece and piece.upper() != "VK_HASH":
+                out.append(piece)
+        return out
+
+    @staticmethod
     def _ensure_hash(link: str, vk_hash: str, hash_limit: int = 0) -> str:
         """Прописывает vk_hash из панели в colon-ссылку, если он не указан.
 
         Формат: wdtt://host:dtls:wg:local:pass:hash[,hash…][#имя].
-        Пустой сегмент хэша заменяем значением из записи пользователя
-        (GET /panel/api/users -> vk_hash). hash_limit=1 (iOS) берёт только
-        первый хэш, как делает панель (vkhash.HashLimit). Если панель уже
-        прописала хэш — ссылка не трогается.
+        Сегмент хэша заменяем значением из записи пользователя
+        (GET /panel/api/users -> vk_hash), если он пуст или содержит
+        плейсхолдер "VK_HASH". hash_limit=1 (iOS) берёт только первый хэш,
+        как делает панель (vkhash.HashLimit).
         """
-        if not link or not vk_hash or not link.startswith("wdtt://"):
+        if not link or not link.startswith("wdtt://"):
             return link
-        hashes = [h for h in vk_hash.split(",") if h.strip()]
+        hashes = WdttClient._clean_hash_pieces(vk_hash)
         if not hashes:
-            return link
+            return link  # в записи панели нет реального хэша — вписывать нечего
         if hash_limit and hash_limit > 0:
             hashes = hashes[:hash_limit]
         core, sep, name = link[len("wdtt://"):].partition("#")
         fields = core.split(":")
         if len(fields) < 6:
             return link
-        if any(fields[5:]):  # хэш уже есть
-            return link
+        if WdttClient._clean_hash_pieces(":".join(fields[5:])):
+            return link  # реальный хэш уже прописан панелью
         fields = fields[:5] + [",".join(hashes)]
         out = "wdtt://" + ":".join(fields)
         return out + ("#" + name if sep else "")
