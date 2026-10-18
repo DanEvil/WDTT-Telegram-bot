@@ -1,15 +1,15 @@
-FROM python:3.12-slim
-
+# ---------- Builder ----------
+FROM python:3.12-slim AS builder
 WORKDIR /app
-
 COPY requirements.txt .
-COPY . .
-
 RUN pip install --no-cache-dir -r requirements.txt
 
-EXPOSE 8080
-
+# ---------- Runtime ----------
+FROM python:3.12-slim AS runtime
+WORKDIR /app
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY . .
+RUN adduser --system --group appuser && chown -R appuser /app
+USER appuser
 ENV PYTHONUNBUFFERED=1
-ENV TZ=Europe/Moscow
-
 CMD ["python", "bot.py"]
