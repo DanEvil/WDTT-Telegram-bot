@@ -116,7 +116,7 @@ INSTRUCTION_TEXT = (
     "🍎 <b>iOS</b> — загрузите приложение "
     "<a href='https://apps.apple.com/app/testflight/id899247664'>TestFlight</a> "
     "из App Store на устройство, затем откройте "
-    "<a href='https://testflight.apple.com/join/ANm6cmDv'>приглашение</a>, "
+    "<a href='https://testflight.apple.com/join/ANm6cmDv'>эту ссылку</a>, "
     "установите клиент, импортируйте ссылку и включите VPN.\n"
 )
 
