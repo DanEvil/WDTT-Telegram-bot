@@ -106,10 +106,6 @@ INSTRUCTION_TEXT = (
     "2. Скопируйте вашу ссылку <code>wdtt://</code> (кнопка 👤 Моя подписка).\n"
     "3. Вставьте её в клиент и подключитесь — устройства привяжутся "
     "автоматически (до лимита вашего тарифа).\n\n"
-    "🪟 <b>Windows</b> — установите <b>WDTT для Windows</b> или <b>PWDTT</b> "
-    "(<code>pwdtt-client-*</code> из "
-    "<a href='https://github.com/ildarmaga/wdtt/releases/latest'>релизов WDTT</a>), "
-    "вставьте ссылку и нажмите «Подключиться».\n\n"
     "🤖 <b>Android</b> — установите приложение "
     "<a href='https://github.com/amurcanov/csqtt/releases/download/v2.1.9/CSQTT-universal.apk'>CSQTT</a> "
     "или <a href='https://github.com/amurcanov/proxy-turn-vk-android/releases/download/v1.2.4/WDTT-universal.apk'>WDTT</a>, "
@@ -117,8 +113,8 @@ INSTRUCTION_TEXT = (
     "🍎 <b>iOS</b> — загрузите приложение TestFlight из App Store на устройство, "
     "затем откройте <a href='https://testflight.apple.com/join/ANm6cmDv'>эту ссылку</a>, "
     "установите клиент, импортируйте ссылку и включите VPN.\n\n"
-    "🐧 <b>Linux</b> — скачайте <b>PWDTT</b> (<code>pwdtt-client-*</code>), "
-    "вставьте ссылку в клиент и подключитесь."
+    "💻 <b>ПК</b> — используйте ссылку 👤 Моя подписка, если она не подошла "
+    "мобильному приложению."
 )
 
 HELP_TEXT = (
