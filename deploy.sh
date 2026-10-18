@@ -152,6 +152,63 @@ EOF
     return 0
 }
 
+# ---------- зависимости ----------
+
+SUDO=""
+if [ "$(id -u)" -ne 0 ]; then
+    if command -v sudo >/dev/null 2>&1; then
+        SUDO="sudo"
+    else
+        echo "Запустите скрипт от root (sudo ./deploy.sh) — нужен root для установки." >&2
+        exit 1
+    fi
+fi
+
+install_deps() {
+    local missing="" pkg pkg_manager
+    command -v curl     >/dev/null 2>&1 || missing="$missing curl"
+    command -v git      >/dev/null 2>&1 || missing="$missing git"
+    command -v whiptail >/dev/null 2>&1 || missing="$missing whiptail"
+    [ -z "$missing" ] && return 0
+
+    if command -v apt-get >/dev/null 2>&1; then
+        pkg="apt-get"; pkg_manager="apt"
+    elif command -v dnf >/dev/null 2>&1; then
+        pkg="dnf"; pkg_manager="dnf"
+    elif command -v yum >/dev/null 2>&1; then
+        pkg="yum"; pkg_manager="yum"
+    elif command -v zypper >/dev/null 2>&1; then
+        pkg="zypper"; pkg_manager="zypper"
+    elif command -v apk >/dev/null 2>&1; then
+        pkg="apk"; pkg_manager="apk"
+    else
+        echo "Неизвестный пакетный менеджер — пропускаю установку:$missing"
+        return 0
+    fi
+
+    echo "Устанавливаю зависимости:$missing ($pkg_manager)..."
+    case $pkg_manager in
+        apt)
+            $SUDO apt-get update -y >/dev/null 2>&1 || true
+            $SUDO apt-get install -y -qq $missing || echo "Не удалось установить:$missing (продолжаю)"
+            ;;
+        dnf)
+            $SUDO dnf install -y -q $(echo $missing | sed 's/whiptail/newt/') || \
+                $SUDO dnf install -y -q git curl || echo "Не удалось установить зависимости (продолжаю)"
+            ;;
+        yum)
+            $SUDO yum install -y -q $(echo $missing | sed 's/whiptail/newt/') || \
+                $SUDO yum install -y -q git curl || echo "Не удалось установить зависимости (продолжаю)"
+            ;;
+        zypper)
+            $SUDO zypper --non-interactive install $(echo $missing | sed 's/whiptail/dialog/') || echo "Не удалось установить:$missing (продолжаю)"
+            ;;
+        apk)
+            $SUDO apk add --no-progress $(echo $missing | sed 's/whiptail/newt/') || echo "Не удалось установить:$missing (продолжаю)"
+            ;;
+    esac
+}
+
 # ---------- основной сценарий ----------
 
 if [ "$CONFIGURE_ONLY" = "1" ]; then
@@ -168,7 +225,8 @@ if [ "$CONFIGURE_ONLY" = "1" ]; then
     exit 0
 fi
 
-echo "--- 1. Проверка Docker ---"
+echo "--- 1. Установка зависимостей (Docker, git, curl, whiptail) ---"
+install_deps
 if ! command -v docker >/dev/null 2>&1; then
     echo "Docker не найден, устанавливаю..."
     curl -fsSL https://get.docker.com | sh
