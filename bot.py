@@ -73,6 +73,8 @@ router = Router()
 class AdminStates(StatesGroup):
     revoke_id = State()
     extend_data = State()
+    gift_id = State()
+    gift_days = State()
     add_server_name = State()
     add_server_url = State()
     add_server_login = State()
@@ -95,9 +97,10 @@ PLAN_BUTTONS: dict[str, str] = {}
 NAV_BUTTONS = {
     "🎁 Пробный период", "🛒 Купить", "👤 Моя подписка", "👥 Рефералы",
     "📖 Инструкция", "❓ Помощь", "🏠 Главное меню", "📊 Статистика",
-    "👥 Клиенты", "⛔ Отозвать", "➕ Продлить", "🖥 Серверы",
+    "👥 Клиенты", "⛔ Отозвать", "➕ Продлить", "🎁 Подарить", "🖥 Серверы",
     "➕ Добавить сервер", "🗑 Удалить сервер",
     "🗂 Тарифы", "➕ Добавить тариф", "✏️ Изменить тариф", "🗑 Удалить тариф",
+    "⚙️ Админка",
 }
 
 INSTRUCTION_TEXT = (
@@ -363,8 +366,8 @@ def admin_menu() -> ReplyKeyboardMarkup:
     rows = [
         [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="👥 Клиенты")],
         [KeyboardButton(text="⛔ Отозвать"), KeyboardButton(text="➕ Продлить")],
-        [KeyboardButton(text="🖥 Серверы"), KeyboardButton(text="➕ Добавить сервер")],
-        [KeyboardButton(text="🗑 Удалить сервер")],
+        [KeyboardButton(text="🎁 Подарить"), KeyboardButton(text="🖥 Серверы")],
+        [KeyboardButton(text="➕ Добавить сервер"), KeyboardButton(text="🗑 Удалить сервер")],
         [KeyboardButton(text="🗂 Тарифы"), KeyboardButton(text="➕ Добавить тариф")],
         [KeyboardButton(text="✏️ Изменить тариф"), KeyboardButton(text="🗑 Удалить тариф")],
         [KeyboardButton(text="🏠 Главное меню")],
@@ -788,10 +791,12 @@ async def process_extend(message: Message, state: FSMContext) -> None:
         info = await client.get_user_info(customer["wdtt_password"]) or {}
         now = int(time.time())
         expires = max(now, int(customer["expires_at"] or 0)) + days * 86400
+        vk_hash = WdttClient._clean_hash_pieces(str(info.get("vk_hash") or ""))
         await client.update_user(
             old_password=customer["wdtt_password"], expires_at=expires,
             total_gb=int(info.get("total_gb") or 0),
             max_devices=int(info.get("max_devices") or 1),
+            vk_hash=",".join(vk_hash),  # иначе панель обнулит hash
         )
         await upsert_customer(telegram_id, customer["wdtt_password"], expires,
                               customer["plan_id"], customer["server_id"],
@@ -804,6 +809,66 @@ async def process_extend(message: Message, state: FSMContext) -> None:
     except Exception:
         pass
     await message.answer(f"✅ Подписка клиента {telegram_id} продлена на {days} дн. (до {fmt_date(expires)}).")
+
+
+@router.message(F.text == "🎁 Подарить", StateFilter(None))
+async def nav_gift(message: Message, state: FSMContext) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    await state.set_state(AdminStates.gift_id)
+    await message.answer("Кому подарить подписку? Отправьте Telegram ID клиента.")
+
+
+@router.message(StateFilter(AdminStates.gift_id))
+async def process_gift_id(message: Message, state: FSMContext) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    text = (message.text or "").strip()
+    if not text.isdigit():
+        await message.answer("Нужен числовой Telegram ID. Попробуйте ещё раз.")
+        return
+    await state.update_data(gift_id=int(text))
+    await state.set_state(AdminStates.gift_days)
+    await message.answer(f"Срок подарка в днях для tg {text}:")
+
+
+@router.message(StateFilter(AdminStates.gift_days))
+async def process_gift_days(message: Message, state: FSMContext) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    text = (message.text or "").strip()
+    if not text.isdigit() or int(text) <= 0:
+        await message.answer("Нужно целое число дней (например, 7). Попробуйте ещё раз.")
+        return
+    days = int(text)
+    data = await state.get_data()
+    telegram_id = int(data["gift_id"])
+    await state.clear()
+    try:
+        client, pwd, expires = await grant_gift(telegram_id, days)
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка выдачи подарка: {e}")
+        return
+    await message.answer(f"✅ tg {telegram_id}: подарочная подписка на {days} дн. (до {fmt_date(expires)}).")
+    try:
+        await bot.send_message(telegram_id,
+                               f"🎉 <b>Вам подарена подписка WDTT на {days} дн.!</b> "
+                               f"Действует до {fmt_date(expires)}.\n"
+                               "Ссылки: кнопка 👤 Моя подписка")
+    except Exception:
+        pass
+
+
+async def grant_gift(telegram_id: int, days: int) -> tuple[WdttClient, str, int]:
+    """Подарочная подписка: безлимитный трафик, устройств как у пробника."""
+    plan = {
+        "id": "gift",
+        "name": "Подарочная подписка",
+        "days": int(days),
+        "traffic_gb": 0,
+        "max_devices": TRIAL["max_devices"],
+    }
+    return await grant_access(telegram_id, None, plan)
 
 
 @router.message(F.text == "➕ Добавить сервер", StateFilter(None))

@@ -415,7 +415,23 @@ async def test_bot_flow(panel_base_url):
     cust333 = await db.get_customer(333)
     assert cust333["wdtt_password"].startswith("userpass-")
     assert cust333["wdtt_password"] != "ghost"
-    print("PASS bot flow (fulfill/renew/recover/referral bonus)")
+
+    # 4) подарочная подписка: новый ключ + безлимит, устройств как у пробника
+    import plans
+    client, pwd4, exp4 = await botmod.grant_gift(444, 7)
+    cust444 = await db.get_customer(444)
+    assert cust444["plan_id"] == "gift" and cust444["wdtt_password"] == pwd4
+    assert exp4 == now + 7 * 86400
+    assert users[pwd4]["expires_at"] == exp4
+    assert users[pwd4]["total_gb"] == 0, users[pwd4]
+    assert users[pwd4]["max_devices"] == plans.TRIAL["max_devices"]
+    # 5) продление подарком тот же пользователь: срок суммируется
+    _, pwd4b, exp4b = await botmod.grant_gift(444, 3)
+    assert pwd4b == pwd4
+    assert exp4b == exp4 + 3 * 86400 and users[pwd4]["expires_at"] == exp4b
+    any_gift_notify = any(cid == 444 or "подар" in t.lower() for cid, t in sent)
+    assert not any_gift_notify  # grant_gift сам ничего не шлёт (шлёт handler)
+    print("PASS bot flow (fulfill/renew/recover/referral+gift bonus)")
 
 
 async def test_webhook_e2e():
