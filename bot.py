@@ -113,9 +113,9 @@ INSTRUCTION_TEXT = (
     "<a href='https://github.com/amurcanov/csqtt/releases/download/v2.1.9/CSQTT-universal.apk'>CSQTT</a> "
     "или <a href='https://github.com/amurcanov/proxy-turn-vk-android/releases/download/v1.2.4/WDTT-universal.apk'>WDTT</a>, "
     "добавьте конфигурацию по ссылке и подключитесь.\n\n"
-    "🍎 <b>iOS</b> — загрузите приложение TestFlight из App Store "
-    "(<a href='https://apps.apple.com/app/testflight/id899247664'>ссылка</a>) "
-    "на устройство, затем откройте "
+    "🍎 <b>iOS</b> — загрузите приложение "
+    "<a href='https://apps.apple.com/app/testflight/id899247664'>TestFlight</a> "
+    "из App Store на устройство, затем откройте "
     "<a href='https://testflight.apple.com/join/ANm6cmDv'>приглашение</a>, "
     "установите клиент, импортируйте ссылку и включите VPN.\n"
 )
