@@ -19,7 +19,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     FSInputFile,
-    InputMediaPhoto,
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
@@ -508,10 +507,8 @@ async def nav_ref(message: Message) -> None:
 @router.message(F.text == "📖 Инструкция", StateFilter(None))
 async def nav_instruction(message: Message) -> None:
     await message.answer(INSTRUCTION_TEXT)
-    await message.answer_media_group(
-        media=[InputMediaPhoto(media=FSInputFile(path)) for path, _ in INSTRUCTION_PHOTOS]
-    )
-    await message.answer("\n".join(caption for _, caption in INSTRUCTION_PHOTOS))
+    for path, caption in INSTRUCTION_PHOTOS:
+        await message.answer_photo(FSInputFile(path), caption=caption)
 
 
 @router.message(F.text == "❓ Помощь", StateFilter(None))
