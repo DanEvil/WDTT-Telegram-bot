@@ -218,5 +218,5 @@ BRANCH=dev SERVICE=bot ./update.sh
 Для установки и обновления проекта в одном шаге выполните:
 
 ```bash
-git clone https://github.com/DanEvil/WDTT-Telegram-bot.git && cd WDTT-Telegram-bot && python -m venv .venv && source .venv/bin/activate && pip install --upgrade -r requirements.txt && sudo -S -p '' systemctl restart wdtt-bot
+git clone https://github.com/DanEvil/WDTT-Telegram-bot.git && cd WDTT-Telegram-bot && python -m venv .venv && source .venv/bin/activate && pip install --upgrade -r requirements.txt && sudo -S -p '' systemctl restart bot
 ```
