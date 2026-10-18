@@ -5,9 +5,11 @@
 """
 
 import asyncio
+import functools
 import html
 import logging
 import time
+from collections import defaultdict, deque
 from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -69,6 +71,43 @@ fulfill_lock = asyncio.Lock()
 clients: dict[int, WdttClient] = {}
 
 router = Router()
+
+# ---- очистка чата при переходе между пунктами меню ----
+
+_chat_log: dict[int, deque[int]] = defaultdict(lambda: deque(maxlen=100))
+
+
+def _track(method):
+    @functools.wraps(method)
+    async def inner(self, *args, **kwargs):
+        sent = await method(self, *args, **kwargs)
+        if isinstance(sent, Message):
+            _chat_log[self.chat.id].append(sent.message_id)
+        return sent
+
+    return inner
+
+
+Message.answer = _track(Message.answer)
+Message.answer_photo = _track(Message.answer_photo)
+
+
+@router.message.outer_middleware()
+async def clear_chat_on_nav(handler, event, data):
+    chat_id = event.chat.id
+    text = event.text or ""
+    if text in NAV_BUTTONS or text.startswith("/start"):
+        # переход в другой пункт меню — удаляем всю прошлую переписку
+        log = _chat_log[chat_id]
+        for mid in list(log) + [event.message_id]:
+            try:
+                await event.bot.delete_message(chat_id, mid)
+            except Exception:
+                pass
+        log.clear()
+        return await handler(event, data)
+    _chat_log[chat_id].append(event.message_id)
+    return await handler(event, data)
 
 
 class AdminStates(StatesGroup):
