@@ -209,6 +209,71 @@ install_deps() {
     esac
 }
 
+# ---------- ежедневная перезагрузка сервера (systemd-таймер) ----------
+
+REBOOT_SERVICE=/etc/systemd/system/daily-reboot.service
+REBOOT_TIMER=/etc/systemd/system/daily-reboot.timer
+REBOOT_TIME_DEFAULT=$(cat /etc/systemd/system/daily-reboot.timer 2>/dev/null | grep -oP '(?<=^OnCalendar=\*-\*-\* ).*' | head -n1)
+
+reboot_timer_remove() {
+    $SUDO systemctl disable --now daily-reboot.timer >/dev/null 2>&1 || true
+    $SUDO rm -f "$REBOOT_SERVICE" "$REBOOT_TIMER"
+    $SUDO systemctl daemon-reload || true
+    echo "Таймер ежедневной перезагрузки отключён."
+}
+
+reboot_timer_install() {
+    local t="$1" hh mm
+    hh=${t%:*}; mm=${t#*:}
+    printf '%02d' "$hh" >/dev/null 2>&1 && t="$(printf '%02d:%02d' "$hh" "$mm")"
+    cat <<HEREDOC | $SUDO tee "$REBOOT_SERVICE" >/dev/null
+[Unit]
+Description=Ежедневная перезагрузка сервера (настраивается WDTT-ботом)
+[Service]
+Type=oneshot
+ExecStart=/sbin/shutdown -r now
+HEREDOC
+    cat <<HEREDOC | $SUDO tee "$REBOOT_TIMER" >/dev/null
+[Unit]
+Description=Ежедневный перезапуск сервера (настраивается WDTT-ботом)
+[Timer]
+OnCalendar=*-*-* $t:00
+Persistent=true
+Unit=daily-reboot.service
+[Install]
+WantedBy=timers.target
+HEREDOC
+    $SUDO systemctl daemon-reload
+    $SUDO systemctl enable --now daily-reboot.timer
+    echo "Сервер будет перезагружаться каждый день в $t (systemd-таймер daily-reboot.timer)."
+    echo "Проверка: systemctl list-timers | grep daily-reboot"
+}
+
+setup_daily_reboot() {
+    # Неинтерактивный режим не трогает таймер. [$REBOOT_TIME_DEFAULT] — текущее время, если таймер уже стоит.
+    [ "${NONINTERACTIVE:-0}" = "1" ] && return 0
+    local cur="${REBOOT_TIME_DEFAULT}" t
+    if [ -f "$REBOOT_TIMER" ]; then
+        echo "Сейчас стоит ежедневная перезагрузка в ${cur:-??}."
+    fi
+    if ! wt_confirm "Настроить ежедневную перезагрузку сервера? (перезапускается ВЕСЬ сервер, включая WDTT-панель)"; then
+        if [ -f "$REBOOT_TIMER" ] && wt_confirm "Существующий таймер перезагрузки отключить?"; then
+            reboot_timer_remove
+        fi
+        return 0
+    fi
+    while :; do
+        t=$(wt_input "Время перезагрузки (HH:MM, время сервера):" "$cur" 1 0)
+        case $t in [0-9][0-9]:[0-5][0-9]|[01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) break ;; esac
+        if [ "$WT_GUI" = "1" ]; then
+            whiptail --title "Настройки WDTT-бота" --msgbox "  Неверный формат. Введите HH:MM, например 04:30." 8 60
+        else
+            echo "Неверный формат — нужен HH:MM (например, 04:30)." >&2
+        fi
+    done
+    reboot_timer_install "$t"
+}
+
 # ---------- основной сценарий ----------
 
 if [ "$CONFIGURE_ONLY" = "1" ]; then
@@ -222,6 +287,7 @@ if [ "$CONFIGURE_ONLY" = "1" ]; then
             echo "Контейнер не запущен — примените настройки: sudo ./deploy.sh"
         fi
     fi
+    setup_daily_reboot
     exit 0
 fi
 
@@ -259,8 +325,15 @@ if [ -f .env ] && [ "${NONINTERACTIVE:-0}" = "0" ] && [ -t 0 ]; then
 elif [ -f .env ]; then
     echo ".env уже существует ($PROJECT_DIR/.env) — неинтерактивный режим, пропускаю."
 else
+    if [ "${NONINTERACTIVE:-0}" = "1" ]; then
+        echo ".env не найден — NONINTERACTIVE требует готовый .env" >&2
+        exit 1
+    fi
     run_settings_wizard
 fi
+
+echo "--- 3.5 Ежедневная перезагрузка сервера ---"
+setup_daily_reboot
 
 echo "--- 4. Сборка и запуск контейнера ---"
 $COMPOSE up -d --build
