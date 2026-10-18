@@ -172,19 +172,16 @@ class WdttClient:
         return u.get("link") if u else None
 
     async def platform_links(self, password: str) -> dict[str, str]:
-        """Ссылки под каждую платформу из панели.
+        """Ссылки под мобильные платформы из панели.
 
         Панель собирает их в buildAllSubscriptionLinks и отдаёт на HTML-странице
         подписки (GET sub_url?html=1) в скрытых textarea #subscription-links и
         #subscription-link-titles (ссылки и заголовки — построчно, пары "заголовок
-        -> ссылка"). Форматы: iOS — VK Turn Proxy, Android — WDTT, PWDTT —
-        Desktop (Windows/Linux), qWDTT, WDTT JSON (универсальная). "PWDTT —
-        Desktop" и "WDTT — Windows" — одинаковые ссылки, поэтому desktop-ссылку
-        отдаём и как Windows, и как Linux.
+        -> ссылка"). Используем: "iOS — VK Turn Proxy" и "Android — WDTT"
+        (desktop/qWDTT/WDTT JSON не включаем; универсальную отдаёт find_link).
 
-        Возвращает {"ios": ..., "android": ..., "windows": ..., "linux": ...};
-        платформы, для которых ссылки нет, пропускаются. WDTT JSON и qWDTT
-        не включаем: первый дублирует find_link, второй — альтернатива Android.
+        Возвращает {"ios": ..., "android": ...}; платформы, для которых ссылки
+        нет, пропускаются.
         """
         u = await self.get_user_info(password)
         if not u:
@@ -214,10 +211,6 @@ class WdttClient:
                                   self._ensure_hash(link, vk_hash, hash_limit=1))
             elif "android" in t:
                 result.setdefault("android", self._ensure_hash(link, vk_hash))
-            elif "pwdtt" in t or "desktop" in t or "windows" in t:
-                link = self._ensure_hash(link, vk_hash)
-                result.setdefault("windows", link)
-                result.setdefault("linux", link)
         return result
 
     @staticmethod

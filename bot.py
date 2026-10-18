@@ -352,7 +352,7 @@ def plans_reply_keyboard(plans) -> ReplyKeyboardMarkup:
 # ---------- профиль и статус ----------
 
 async def _links_section(client, pwd: str) -> str | None:
-    """Блок со ссылками подключения: отдельная для iOS/Android/Windows/Linux.
+    """Блок со ссылками подключения для iOS и Android.
 
     Платформенные ссылки берём со страницы подписки панели; если их нет —
     откатываемся на универсальную wdtt:// ссылку.
@@ -362,8 +362,7 @@ async def _links_section(client, pwd: str) -> str | None:
     except Exception:
         log.warning("платформенные ссылки недоступны, используем универсальную")
         pl = {}
-    labels = (("ios", "🍏 iOS"), ("android", "🤖 Android"),
-              ("windows", "🪟 Windows"), ("linux", "🐧 Linux"))
+    labels = (("ios", "🍏 iOS"), ("android", "🤖 Android"))
     parts = [f"<b>{label}</b>\n<code>{html.escape(pl[key])}</code>"
              for key, label in labels if pl.get(key)]
     if parts:

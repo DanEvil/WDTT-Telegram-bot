@@ -197,13 +197,12 @@ async def test_wdtt_client(base_url):
     assert link2 == link
     state["sessions_valid"] = True
 
-    # платформенные ссылки со страницы подписки + вписанный vk_hash панели
+    # платформенные ссылки (только iOS/Android) + вписанный vk_hash панели
     users[pw]["vk_hash"] = "vkhash1,vkhash2"
     pl = await c.platform_links(pw)
-    assert set(pl) == {"ios", "android", "windows", "linux"}, pl
+    assert set(pl) == {"ios", "android"}, pl
     assert pl["ios"] == "wdtt://94.156.114.115:56000:56001::userpass-x:vkhash1#VK Turn", pl["ios"]
     assert pl["android"] == "wdtt://94.156.114.115:56000:56001:9000:userpass-x:vkhash1,vkhash2", pl["android"]
-    assert pl["windows"] == pl["linux"] == "wdtt://94.156.114.115:56000:56001::userpass-x:vkhash1,vkhash2#WDTT"
     assert all(x != "wdtt://universal-json" for x in pl.values())
 
     # update_user: поля применяются
