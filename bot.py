@@ -508,14 +508,10 @@ async def nav_ref(message: Message) -> None:
 @router.message(F.text == "📖 Инструкция", StateFilter(None))
 async def nav_instruction(message: Message) -> None:
     await message.answer(INSTRUCTION_TEXT)
-    media = [
-        InputMediaPhoto(
-            media=FSInputFile(path),
-            caption=caption,
-        )
-        for path, caption in INSTRUCTION_PHOTOS
-    ]
-    await message.answer_media_group(media=media)
+    await message.answer_media_group(
+        media=[InputMediaPhoto(media=FSInputFile(path)) for path, _ in INSTRUCTION_PHOTOS]
+    )
+    await message.answer("\n".join(caption for _, caption in INSTRUCTION_PHOTOS))
 
 
 @router.message(F.text == "❓ Помощь", StateFilter(None))
