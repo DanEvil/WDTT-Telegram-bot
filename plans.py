@@ -3,42 +3,43 @@ import json
 import os
 
 # Тарифы по умолчанию (пример — поменяйте под свою ценовую политику).
+# Цена = 100 ₽/мес × продолжительность в месяцах; трафик безлимитный у всех.
 DEFAULT_PLANS = [
-    {
-        "id": "week",
-        "name": "Неделя",
-        "days": 7,
-        "price": 99,
-        "traffic_gb": 20,
-        "max_devices": 1,
-        "description": "7 дней, 20 ГБ, 1 устройство",
-    },
     {
         "id": "month",
         "name": "Месяц",
         "days": 30,
-        "price": 249,
-        "traffic_gb": 100,
-        "max_devices": 2,
-        "description": "30 дней, 100 ГБ, 2 устройства",
+        "price": 100,
+        "traffic_gb": 0,
+        "max_devices": 3,
+        "description": "30 дней, безлимит трафика, 3 устройства",
     },
     {
         "id": "quarter",
         "name": "3 месяца",
         "days": 90,
-        "price": 649,
-        "traffic_gb": 300,
+        "price": 300,
+        "traffic_gb": 0,
         "max_devices": 3,
-        "description": "90 дней, 300 ГБ, 3 устройства",
+        "description": "90 дней, безлимит трафика, 3 устройства",
+    },
+    {
+        "id": "half_year",
+        "name": "6 месяцев",
+        "days": 180,
+        "price": 600,
+        "traffic_gb": 0,
+        "max_devices": 3,
+        "description": "180 дней, безлимит трафика, 3 устройства",
     },
     {
         "id": "year",
-        "name": "Год",
+        "name": "12 месяцев",
         "days": 365,
-        "price": 1990,
+        "price": 1200,
         "traffic_gb": 0,
-        "max_devices": 5,
-        "description": "365 дней, безлимит трафика, 5 устройств",
+        "max_devices": 3,
+        "description": "365 дней, безлимит трафика, 3 устройства",
     },
 ]
 

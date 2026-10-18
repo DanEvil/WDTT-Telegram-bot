@@ -1,15 +1,19 @@
-# ---------- Builder ----------
-FROM python:3.12-slim AS builder
+FROM python:3.13-slim
+
 WORKDIR /app
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ---------- Runtime ----------
-FROM python:3.12-slim AS runtime
-WORKDIR /app
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY . .
-RUN adduser --system --group appuser && chown -R appuser /app
+
+RUN addgroup --system app \
+    && adduser --system --ingroup app appuser \
+    && mkdir -p /app/data \
+    && chown -R appuser:app /app
+
 USER appuser
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=1 \
+    DB_PATH=/app/data/bot.db
+
 CMD ["python", "bot.py"]

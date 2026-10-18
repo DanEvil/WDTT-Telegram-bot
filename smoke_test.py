@@ -70,8 +70,33 @@ async def users_add(request):
         "max_devices": body.get("max_devices", 1),
         "active": True,
         "link": "wdtt://QWJjRGVm%s==" % state["next_num"],
+        "sub_url": "%s://%s/subpage?pw=%s" % (request.scheme, request.host, pw),
     }
     return ok({"password": pw})
+
+
+async def sub_page(request):
+    # HTML-страница подписки: платформенные ссылки в скрытых textarea,
+    # как на реальной странице панели (buildAllSubscriptionLinks).
+    pw = request.query.get("pw")
+    if pw not in users:
+        return web.Response(status=404, text="not found")
+    pw = pw
+    body = (
+        '<textarea id="subscription-links" style="display:none">'
+        "wdtt://universal-json\n"
+        "wdtt://94.156.114.115:56000:56001::userpass-x:hh#VK Turn\n"
+        "wdtt://94.156.114.115:56000:56001:9000:userpass-x:hh,hh2\n"
+        "wdtt://94.156.114.115:56000:56001::userpass-x:hh#WDTT\n"
+        "</textarea>\n"
+        '<textarea id="subscription-link-titles" style="display:none">'
+        "WDTT JSON\n"
+        "iOS — VK Turn Proxy\n"
+        "Android — WDTT\n"
+        "PWDTT — Desktop\n"
+        "</textarea>"
+    )
+    return web.Response(text=body, content_type="text/html")
 
 
 async def users_list(request):
@@ -133,6 +158,7 @@ async def make_app():
     app.router.add_post("/wdtt/panel/api/users/delete", users_delete)
     app.router.add_post("/wdtt/panel/api/users/reset-traffic", users_reset_traffic)
     app.router.add_get("/wdtt/panel/api/inbound", inbound)
+    app.router.add_get("/subpage", sub_page)
     return app
 
 
@@ -152,6 +178,7 @@ async def test_wdtt_client(base_url):
     assert info["max_devices"] == 2
 
     link = await c.find_link(pw)
+    assert link == "wdtt://QWJjRGVm%d==" % state["next_num"]
     assert link and link.startswith("wdtt://"), link
 
     # неверный пароль -> WdttError
@@ -168,6 +195,14 @@ async def test_wdtt_client(base_url):
     link2 = await c.find_link(pw)
     assert link2 == link
     state["sessions_valid"] = True
+
+    # платформенные ссылки со страницы подписки
+    pl = await c.platform_links(pw)
+    assert set(pl) == {"ios", "android", "windows", "linux"}, pl
+    assert pl["ios"].startswith("wdtt://94.156") and "#VK Turn" in pl["ios"]
+    assert pl["android"] == "wdtt://94.156.114.115:56000:56001:9000:userpass-x:hh,hh2"
+    assert pl["windows"] == pl["linux"], "PWDTT Desktop годится и для Windows, и для Linux"
+    assert all(x != "wdtt://universal-json" for x in pl.values())
 
     # update_user: поля применяются
     await c.update_user(old_password=pw, expires_at=now + 7200, total_gb=100, max_devices=3)
@@ -248,6 +283,13 @@ async def test_db(base_url):
     s = await db.stats()
     assert s["paid"] == 1 and abs(s["revenue"] - 249.0) < 0.01
     assert s["active"] == 1  # только tg 1
+
+    # delete plan и восстановление
+    await db.delete_plan("week")
+    assert [p["id"] for p in await db.list_plans()] == ["month"]
+    await db.upsert_plan("week", "Неделя", 7, 99.0, 20, 1)
+    assert [p["id"] for p in await db.list_plans()] == ["month", "week"]
+
     print("PASS db (plans/servers/customers/payments/trials/referrals/stats)")
 
 

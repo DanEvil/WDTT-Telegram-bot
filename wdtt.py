@@ -19,6 +19,7 @@
 """
 
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -169,3 +170,49 @@ class WdttClient:
         """
         u = await self.get_user_info(password)
         return u.get("link") if u else None
+
+    async def platform_links(self, password: str) -> dict[str, str]:
+        """Ссылки под каждую платформу из панели.
+
+        Панель собирает их в buildAllSubscriptionLinks и отдаёт на HTML-странице
+        подписки (GET sub_url?html=1) в скрытых textarea #subscription-links и
+        #subscription-link-titles (ссылки и заголовки — построчно, пары "заголовок
+        -> ссылка"). Форматы: iOS — VK Turn Proxy, Android — WDTT, PWDTT —
+        Desktop (Windows/Linux), qWDTT, WDTT JSON (универсальная). "PWDTT —
+        Desktop" и "WDTT — Windows" — одинаковые ссылки, поэтому desktop-ссылку
+        отдаём и как Windows, и как Linux.
+
+        Возвращает {"ios": ..., "android": ..., "windows": ..., "linux": ...};
+        платформы, для которых ссылки нет, пропускаются. WDTT JSON и qWDTT
+        не включаем: первый дублирует find_link, второй — альтернатива Android.
+        """
+        u = await self.get_user_info(password)
+        if not u:
+            return {}
+        sub_url = str(u.get("sub_url") or "").strip()
+        if not sub_url:
+            return {}
+        sep = "&" if "?" in sub_url else "?"
+        r = await self._client.get(sub_url + sep + "html=1", headers={"Accept": "text/html"})
+        if r.status_code >= 400:
+            raise WdttError(f"WDTT subscription page -> HTTP {r.status_code}")
+        page = r.text
+        m_links = re.search(r'id="subscription-links"[^>]*>(.*?)</textarea>', page, re.S)
+        m_titles = re.search(r'id="subscription-link-titles"[^>]*>(.*?)</textarea>', page, re.S)
+        if not m_links or not m_titles:
+            return {}
+        links = [x.strip() for x in m_links.group(1).splitlines() if x.strip()]
+        titles = [x.strip() for x in m_titles.group(1).splitlines() if x.strip()]
+        result: dict[str, str] = {}
+        for title, link in zip(titles, links):
+            if not link:
+                continue
+            t = title.lower()
+            if "ios" in t or "turn" in t:
+                result.setdefault("ios", link)
+            elif "android" in t:
+                result.setdefault("android", link)
+            elif "pwdtt" in t or "desktop" in t or "windows" in t:
+                result.setdefault("windows", link)
+                result.setdefault("linux", link)
+        return result
