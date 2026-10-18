@@ -82,12 +82,13 @@ async def sub_page(request):
     if pw not in users:
         return web.Response(status=404, text="not found")
     pw = pw
+    # хэш есть в записи панели, но панель отдала colon-ссылки без hash
     body = (
         '<textarea id="subscription-links" style="display:none">'
         "wdtt://universal-json\n"
-        "wdtt://94.156.114.115:56000:56001::userpass-x:hh#VK Turn\n"
-        "wdtt://94.156.114.115:56000:56001:9000:userpass-x:hh,hh2\n"
-        "wdtt://94.156.114.115:56000:56001::userpass-x:hh#WDTT\n"
+        "wdtt://94.156.114.115:56000:56001::userpass-x:#VK Turn\n"
+        "wdtt://94.156.114.115:56000:56001:9000:userpass-x:\n"
+        "wdtt://94.156.114.115:56000:56001::userpass-x:#WDTT\n"
         "</textarea>\n"
         '<textarea id="subscription-link-titles" style="display:none">'
         "WDTT JSON\n"
@@ -196,12 +197,13 @@ async def test_wdtt_client(base_url):
     assert link2 == link
     state["sessions_valid"] = True
 
-    # платформенные ссылки со страницы подписки
+    # платформенные ссылки со страницы подписки + вписанный vk_hash панели
+    users[pw]["vk_hash"] = "vkhash1,vkhash2"
     pl = await c.platform_links(pw)
     assert set(pl) == {"ios", "android", "windows", "linux"}, pl
-    assert pl["ios"].startswith("wdtt://94.156") and "#VK Turn" in pl["ios"]
-    assert pl["android"] == "wdtt://94.156.114.115:56000:56001:9000:userpass-x:hh,hh2"
-    assert pl["windows"] == pl["linux"], "PWDTT Desktop годится и для Windows, и для Linux"
+    assert pl["ios"] == "wdtt://94.156.114.115:56000:56001::userpass-x:vkhash1#VK Turn", pl["ios"]
+    assert pl["android"] == "wdtt://94.156.114.115:56000:56001:9000:userpass-x:vkhash1,vkhash2", pl["android"]
+    assert pl["windows"] == pl["linux"] == "wdtt://94.156.114.115:56000:56001::userpass-x:vkhash1,vkhash2#WDTT"
     assert all(x != "wdtt://universal-json" for x in pl.values())
 
     # update_user: поля применяются

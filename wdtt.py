@@ -189,6 +189,7 @@ class WdttClient:
         u = await self.get_user_info(password)
         if not u:
             return {}
+        vk_hash = str(u.get("vk_hash") or "").strip()
         sub_url = str(u.get("sub_url") or "").strip()
         if not sub_url:
             return {}
@@ -209,10 +210,39 @@ class WdttClient:
                 continue
             t = title.lower()
             if "ios" in t or "turn" in t:
-                result.setdefault("ios", link)
+                result.setdefault("ios",
+                                  self._ensure_hash(link, vk_hash, hash_limit=1))
             elif "android" in t:
-                result.setdefault("android", link)
+                result.setdefault("android", self._ensure_hash(link, vk_hash))
             elif "pwdtt" in t or "desktop" in t or "windows" in t:
+                link = self._ensure_hash(link, vk_hash)
                 result.setdefault("windows", link)
                 result.setdefault("linux", link)
         return result
+
+    @staticmethod
+    def _ensure_hash(link: str, vk_hash: str, hash_limit: int = 0) -> str:
+        """Прописывает vk_hash из панели в colon-ссылку, если он не указан.
+
+        Формат: wdtt://host:dtls:wg:local:pass:hash[,hash…][#имя].
+        Пустой сегмент хэша заменяем значением из записи пользователя
+        (GET /panel/api/users -> vk_hash). hash_limit=1 (iOS) берёт только
+        первый хэш, как делает панель (vkhash.HashLimit). Если панель уже
+        прописала хэш — ссылка не трогается.
+        """
+        if not link or not vk_hash or not link.startswith("wdtt://"):
+            return link
+        hashes = [h for h in vk_hash.split(",") if h.strip()]
+        if not hashes:
+            return link
+        if hash_limit and hash_limit > 0:
+            hashes = hashes[:hash_limit]
+        core, sep, name = link[len("wdtt://"):].partition("#")
+        fields = core.split(":")
+        if len(fields) < 6:
+            return link
+        if any(fields[5:]):  # хэш уже есть
+            return link
+        fields = fields[:5] + [",".join(hashes)]
+        out = "wdtt://" + ":".join(fields)
+        return out + ("#" + name if sep else "")
