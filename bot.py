@@ -18,6 +18,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
+    FSInputFile,
+    InputMediaPhoto,
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
@@ -117,7 +119,13 @@ INSTRUCTION_TEXT = (
     "<a href='https://apps.apple.com/app/testflight/id899247664'>TestFlight</a> "
     "из App Store на устройство, затем откройте "
     "<a href='https://testflight.apple.com/join/ANm6cmDv'>эту ссылку</a>, "
-    "установите клиент, импортируйте ссылку и включите VPN.\n"
+    "установите клиент и подключитесь, как показано на скриншотах ниже.\n"
+)
+
+INSTRUCTION_PHOTOS = (
+    ("assets/IMG_6820.jpeg", 'Перейти в "Settings"'),
+    ("assets/IMG_6821.jpg", 'Опускаемся в самый низ и нажимаем на "Import from Connection Link..."'),
+    ("assets/IMG_6822.jpg", "Разрешить вставку"),
 )
 
 HELP_TEXT = (
@@ -500,6 +508,14 @@ async def nav_ref(message: Message) -> None:
 @router.message(F.text == "📖 Инструкция", StateFilter(None))
 async def nav_instruction(message: Message) -> None:
     await message.answer(INSTRUCTION_TEXT)
+    media = [
+        InputMediaPhoto(
+            media=FSInputFile(path),
+            caption=caption,
+        )
+        for path, caption in INSTRUCTION_PHOTOS
+    ]
+    await message.answer_media_group(media=media)
 
 
 @router.message(F.text == "❓ Помощь", StateFilter(None))
