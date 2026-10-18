@@ -407,7 +407,12 @@ async def nav_menu(telegram_id: int, is_admin_user: bool | None = None) -> Reply
     ]
     if is_admin_user:
         rows[-1].append(KeyboardButton(text="⚙️ Админка"))
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Выберите действие из меню",
+    )
 
 
 def admin_menu() -> ReplyKeyboardMarkup:
@@ -420,7 +425,12 @@ def admin_menu() -> ReplyKeyboardMarkup:
         [KeyboardButton(text="✏️ Изменить тариф"), KeyboardButton(text="🗑 Удалить тариф")],
         [KeyboardButton(text="🏠 Главное меню")],
     ]
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Админ-панель",
+    )
 
 
 def plans_reply_keyboard(plans) -> ReplyKeyboardMarkup:
@@ -431,7 +441,11 @@ def plans_reply_keyboard(plans) -> ReplyKeyboardMarkup:
         PLAN_BUTTONS[text] = p["id"]
         rows.append([KeyboardButton(text=text)])
     rows.append([KeyboardButton(text="🏠 Главное меню")])
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 # ---------- профиль и статус ----------
