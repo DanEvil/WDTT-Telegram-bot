@@ -43,6 +43,9 @@ WDTT_BASE_URL = os.getenv("WDTT_BASE_URL", "https://127.0.0.1:2860/wdtt").strip(
 WDTT_USERNAME = os.getenv("WDTT_USERNAME", "admin").strip()
 WDTT_PASSWORD = os.getenv("WDTT_PASSWORD", "wdtt").strip()
 WDTT_VERIFY_SSL = _as_bool("WDTT_VERIFY_SSL", False)
+# vk_hash, который прописывается новым пользователям вместо создания VK-вызова
+# (иногда удобно ставить один общий хэш); если пусто, бот сам создаст вызов.
+WDTT_VK_HASH = os.getenv("WDTT_VK_HASH", "").strip()
 
 # Бот
 DB_PATH = os.getenv("DB_PATH", "bot.db").strip()

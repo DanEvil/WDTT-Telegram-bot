@@ -253,22 +253,49 @@ async def grant_access(telegram_id: int, username: str | None, plan: dict) -> tu
         expires = base + days * 86400
         pwd = customer["wdtt_password"]
         try:
+            # панель пересобирает запись: vk_hash передаём сохранённый, иначе обнулится
+            try:
+                info = await client.get_user_info(pwd) or {}
+                vk_hash = WdttClient._clean_hash_pieces(str(info.get("vk_hash") or ""))
+                vk_hash = ",".join(vk_hash)
+            except Exception:
+                vk_hash = ""
             await client.update_user(old_password=pwd, expires_at=expires,
-                                     total_gb=traffic, max_devices=devices)
+                                     total_gb=traffic, max_devices=devices,
+                                     vk_hash=vk_hash)
             await client.reset_traffic(pwd)
         except WdttError as e:
             log.warning("Продление tg %s не удалось (%s), создаём новый ключ", telegram_id, e)
             pwd = await client.add_user(comment=_comment_for(telegram_id, username),
-                                        expires_at=expires, total_gb=traffic, max_devices=devices)
+                                        expires_at=expires, total_gb=traffic, max_devices=devices,
+                                        vk_hash=config.WDTT_VK_HASH)
     else:
         server_id = await pick_least_loaded_server_id()
         client = await get_client(server_id)
         expires = now + days * 86400
         pwd = await client.add_user(comment=_comment_for(telegram_id, username),
-                                    expires_at=expires, total_gb=traffic, max_devices=devices)
+                                    expires_at=expires, total_gb=traffic, max_devices=devices,
+                                    vk_hash=config.WDTT_VK_HASH)
 
+    await _ensure_vk_hash(client, pwd)
     await upsert_customer(telegram_id, pwd, expires, plan["id"], server_id, username=username)
     return client, pwd, expires
+
+
+async def _ensure_vk_hash(client: WdttClient, pwd: str) -> None:
+    """Гарантирует vk_hash у пользователя: задать из WDTT_VK_HASH либо создать VK-вызов.
+
+    Сбой не прерывает выдачу — в ссылках останется плейсхолдер VK_HASH (не фатально).
+    """
+    if config.WDTT_VK_HASH:
+        return
+    try:
+        info = await client.get_user_info(pwd) or {}
+        if WdttClient._clean_hash_pieces(str(info.get("vk_hash") or "")):
+            return  # настоящий хэш уже есть
+        await client.create_vk_call(pwd)
+    except Exception as e:
+        log.warning("VK-вызов для %s не создан (%s) — hash останется плейсхолдером", pwd[:2], e)
 
 
 async def grant_referral_reward(referred_id: int) -> None:

@@ -111,14 +111,19 @@ class WdttClient:
     # ---------- пользователи VPN ----------
 
     async def add_user(self, *, comment: str, expires_at: int = 0, total_gb: int = 0,
-                       max_devices: int = 1) -> str:
-        """Создаёт пользователя и возвращает его пароль (он же — логин-ключ)."""
+                       max_devices: int = 1, vk_hash: str = "") -> str:
+        """Создаёт пользователя и возвращает его пароль (он же — логин-ключ).
+
+        Панель пересобирает запись, vk_hash передаём явно (пустая строка
+        совпадает с дефолтом панели — плейсхолдер VK_HASH в ссылках).
+        """
         payload = {
             "comment": comment,
             "expires_at": int(expires_at),
             "total_gb": int(total_gb),
             "max_devices": int(max_devices),
             "active": True,
+            "vk_hash": vk_hash,
         }
         obj = await self._call("POST", "/panel/api/users/add", json=payload)
         password = (obj or {}).get("password") if isinstance(obj, dict) else None
@@ -128,10 +133,11 @@ class WdttClient:
 
     async def update_user(self, *, old_password: str, password: str | None = None,
                           expires_at: int = 0, total_gb: int = 0,
-                          max_devices: int = 1) -> None:
+                          max_devices: int = 1, vk_hash: str = "") -> None:
         """Обновляет пользователя. password=None -> пароль не меняется.
 
-        Панель пересобирает запись из запроса, поэтому все поля передаём явно.
+        Панель пересобирает запись из запроса, поэтому все поля передаём явно
+        (в т.ч. vk_hash: пропущенное поле панель обнулит).
         """
         payload = {
             "old_password": old_password,
@@ -140,8 +146,23 @@ class WdttClient:
             "total_gb": int(total_gb),
             "max_devices": int(max_devices),
             "active": True,
+            "vk_hash": vk_hash,
         }
         await self._call("POST", "/panel/api/users/update", json=payload)
+
+    async def create_vk_call(self, password: str) -> str:
+        """Создаёт VK-вызов для пользователя и применяет его hash (поля Applied).
+
+        POST /panel/api/vk/call/create {"password": ..., "apply": true}.
+        Возвращает применённый vk_hash; требует, чтобы в панели были настроены
+        VK-куки. Ошибка пробрасывается наружу (WdttError).
+        """
+        obj = await self._call("POST", "/panel/api/vk/call/create",
+                               json={"password": password, "apply": True})
+        hash_value = (obj or {}).get("vk_hash") if isinstance(obj, dict) else None
+        if not hash_value:
+            raise WdttError("WDTT vk/call/create не вернул hash")
+        return str(hash_value)
 
     async def reset_traffic(self, password: str) -> None:
         await self._call("POST", "/panel/api/users/reset-traffic", json={"password": password})

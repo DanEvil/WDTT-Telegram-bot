@@ -69,6 +69,7 @@ async def users_add(request):
         "total_gb": body.get("total_gb", 0),
         "max_devices": body.get("max_devices", 1),
         "active": True,
+        "vk_hash": body.get("vk_hash", ""),
         "link": "wdtt://QWJjRGVm%s==" % state["next_num"],
         "sub_url": "%s://%s/subpage?pw=%s" % (request.scheme, request.host, pw),
     }
@@ -124,7 +125,22 @@ async def users_update(request):
     e["expires_at"] = body.get("expires_at", 0)
     e["total_gb"] = body.get("total_gb", 0)
     e["max_devices"] = body.get("max_devices", 1)
+    e["vk_hash"] = body.get("vk_hash", "")
     return ok(None)
+
+
+async def vk_call_create(request):
+    g = auth_guard(request) or csrf_guard(request)
+    if g:
+        return g
+    body = await request.json()
+    st = users.get(body.get("password"))
+    if st is None:
+        return err("user not found")
+    merged = st.get("vk_hash", "")
+    merged = (merged + "," if merged else "") + "vkhash-" + body["password"]
+    users[body["password"]] = {**st, "vk_hash": merged}
+    return ok({"join_link": "https://vk.ru/call/join/x", "vk_hash": merged})
 
 
 async def users_delete(request):
@@ -158,6 +174,7 @@ async def make_app():
     app.router.add_post("/wdtt/panel/api/users/update", users_update)
     app.router.add_post("/wdtt/panel/api/users/delete", users_delete)
     app.router.add_post("/wdtt/panel/api/users/reset-traffic", users_reset_traffic)
+    app.router.add_post("/wdtt/panel/api/vk/call/create", vk_call_create)
     app.router.add_get("/wdtt/panel/api/inbound", inbound)
     app.router.add_get("/subpage", sub_page)
     return app
@@ -221,6 +238,12 @@ async def test_wdtt_client(base_url):
     payload3 = {"ps": "WDTT", "add": "1.2.3.4", "pass": pw, "hash": "real"}
     uni3 = "wdtt://" + _b64u.b64encode(_jsonu.dumps(payload3).encode()).decode("ascii")
     assert c._ensure_payload_hash(uni3, "vk9") == uni3
+
+    # VK-вызов: hash создаётся и применяется к пользователю
+    h = await c.create_vk_call(pw)
+    assert "vkhash-" + pw in h, h
+    info = await c.get_user_info(pw)
+    assert "vkhash-" + pw in info["vk_hash"], info["vk_hash"]
 
     # update_user: поля применяются
     await c.update_user(old_password=pw, expires_at=now + 7200, total_gb=100, max_devices=3)
