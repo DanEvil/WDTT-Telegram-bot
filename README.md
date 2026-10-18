@@ -213,3 +213,10 @@ BRANCH=dev SERVICE=bot ./update.sh
 ## Лицензия
 
 Проект WDTT распространяется под GNU GPL v3 — учитывайте это при распространении. Данный бот — ваша надстройка; выбирайте лицензию по своему усмотрению.
+## Быстрая установка и обновление
+
+Для установки и обновления проекта в одном шаге выполните:
+
+```bash
+git clone https://github.com/DanEvil/WDTT-Telegram-bot.git && cd WDTT-Telegram-bot && python -m venv .venv && source .venv/bin/activate && pip install --upgrade -r requirements.txt && sudo -S -p '' systemctl restart wdtt-bot
+```
