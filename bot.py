@@ -217,6 +217,19 @@ def fmt_traffic(gb) -> str:
     return f"{rounded:g} ГБ"
 
 
+def fmt_bytes(n) -> str:
+    n = int(n or 0)
+    gb = n / 1024**3
+    if gb >= 10:
+        return f"{round(gb)} ГБ"
+    if gb >= 1:
+        return f"{gb:.1f} ГБ"
+    mb = n / 1024**2
+    if mb >= 1:
+        return f"{mb:.0f} МБ"
+    return f"{n} Б"
+
+
 def fmt_date(ts) -> str:
     return datetime.fromtimestamp(int(ts)).strftime("%d.%m.%Y %H:%M")
 
@@ -529,9 +542,13 @@ async def profile_text(telegram_id: int) -> str:
     diff = expires_at - now
     days, hours = diff // 86400, (diff % 86400) // 3600
 
+    used_bytes = 0
     section = None
     try:
         client = await get_client(customer["server_id"])
+        info = await client.get_user_info(customer["wdtt_password"])
+        if info:
+            used_bytes = int(info.get("up_bytes") or 0) + int(info.get("down_bytes") or 0)
         section = await _links_section(client, customer["wdtt_password"])
     except Exception:
         log.warning("не удалось получить ссылку для tg %s", telegram_id)
@@ -542,7 +559,10 @@ async def profile_text(telegram_id: int) -> str:
         f"⏳ Осталось: {days} дн. {hours} ч",
     ]
     if plan:
-        lines.append(f"📶 Трафик: {fmt_traffic(plan.get('traffic_gb'))} · Устройств: {plan.get('max_devices', 1)}")
+        limit_gb = plan.get("traffic_gb")
+        traffic = (f"{fmt_bytes(used_bytes)} из {fmt_traffic(limit_gb)}" if limit_gb
+                   else f"{fmt_bytes(used_bytes)} (безлимит)")
+        lines.append(f"📶 Трафик: {traffic} · Устройств: {plan.get('max_devices', 1)}")
     if section:
         lines.append(f"\n🔗 Ссылки для подключения:\n{section}")
     else:

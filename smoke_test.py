@@ -67,6 +67,8 @@ async def users_add(request):
         "comment": body.get("comment", ""),
         "expires_at": body.get("expires_at", 0),
         "total_gb": body.get("total_gb", 0),
+        "up_bytes": 0,
+        "down_bytes": 0,
         "max_devices": body.get("max_devices", 1),
         "active": True,
         "vk_hash": body.get("vk_hash", ""),
@@ -413,6 +415,13 @@ async def test_bot_flow(panel_base_url):
     cust111b = await db.get_customer(111)
     assert cust111b["wdtt_password"] == pwd1
     assert cust111b["expires_at"] == exp1 + 30 * 86400
+
+    # профиль: отображение использованного трафика
+    gb = 1024**3
+    users[pwd1]["up_bytes"] = int(2.7 * gb)
+    users[pwd1]["down_bytes"] = int(4.3 * gb)
+    profile = await botmod.profile_text(111)
+    assert "7.0 ГБ из 100 ГБ" in profile, profile
 
     # 3) ключ потерян в панели: создаётся новый
     await db.upsert_customer(333, "ghost", now - 3600, "month", fake_sid)
