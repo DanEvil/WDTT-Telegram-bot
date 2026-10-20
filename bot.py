@@ -20,10 +20,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
-    CallbackQuery,
     FSInputFile,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
@@ -163,7 +160,8 @@ PLAN_BUTTONS: dict[str, str] = {}
 
 NAV_BUTTONS = {
     "🎁 Пробный период", "🛒 Купить", "👤 Моя подписка", "👥 Рефералы",
-    "📖 Инструкция", "❓ Помощь", "🏠 Главное меню", "📊 Статистика",
+    "📖 Инструкция", "🤖 Android — инструкция", "🍎 iOS — инструкция",
+    "❓ Помощь", "🏠 Главное меню", "📊 Статистика",
     "👥 Клиенты", "⛔ Отозвать", "➕ Продлить", "🎁 Подарить", "🖥 Серверы",
     "➕ Добавить сервер", "🗑 Удалить сервер",
     "🗂 Тарифы", "➕ Добавить тариф", "✏️ Изменить тариф", "🗑 Удалить тариф",
@@ -624,32 +622,30 @@ async def nav_ref(message: Message) -> None:
 
 @router.message(F.text == "📖 Инструкция", StateFilter(None))
 async def nav_instruction(message: Message) -> None:
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 Android", callback_data="instr_android")],
-        [InlineKeyboardButton(text="🍎 iOS", callback_data="instr_ios")],
-    ])
-    m = await message.answer(INSTRUCTION_INTRO, reply_markup=kb)
-    _chat_log[m.chat.id].append(m.message_id)
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🤖 Android — инструкция"), KeyboardButton(text="🍎 iOS — инструкция")],
+            [KeyboardButton(text="🏠 Главное меню")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Выберите платформу",
+    )
+    await message.answer(INSTRUCTION_INTRO, reply_markup=kb)
 
 
-@router.callback_query(F.data == "instr_android")
-async def cb_instr_android(cq: CallbackQuery) -> None:
-    await cq.answer()
-    m = await cq.message.answer(INSTRUCTION_ANDROID)
-    _chat_log[m.chat.id].append(m.message_id)
+@router.message(F.text == "🤖 Android — инструкция", StateFilter(None))
+async def nav_instr_android(message: Message) -> None:
+    await message.answer(INSTRUCTION_ANDROID)
     for path, caption in ANDROID_PHOTOS:
-        p = await cq.message.answer_photo(FSInputFile(path), caption=caption)
-        _chat_log[p.chat.id].append(p.message_id)
+        await message.answer_photo(FSInputFile(path), caption=caption)
 
 
-@router.callback_query(F.data == "instr_ios")
-async def cb_instr_ios(cq: CallbackQuery) -> None:
-    await cq.answer()
-    m = await cq.message.answer(INSTRUCTION_IOS)
-    _chat_log[m.chat.id].append(m.message_id)
+@router.message(F.text == "🍎 iOS — инструкция", StateFilter(None))
+async def nav_instr_ios(message: Message) -> None:
+    await message.answer(INSTRUCTION_IOS)
     for path, caption in INSTRUCTION_PHOTOS:
-        p = await cq.message.answer_photo(FSInputFile(path), caption=caption)
-        _chat_log[p.chat.id].append(p.message_id)
+        await message.answer_photo(FSInputFile(path), caption=caption)
 
 
 @router.message(F.text == "❓ Помощь", StateFilter(None))
