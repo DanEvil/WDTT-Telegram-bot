@@ -185,9 +185,9 @@ INSTRUCTION_IOS = (
 )
 
 INSTRUCTION_PHOTOS = (
-    ("assets/IMG_6820.jpeg", 'Перейти в "Settings"'),
-    ("assets/IMG_6821.jpg", 'Опускаемся в самый низ и нажимаем на "Import from Connection Link..."'),
-    ("assets/IMG_6822.jpg", "Разрешить вставку"),
+    ("assets/IMG_6820.jpeg", 'Откройте приложение VK Turn Proxy и нажмите внизу "Settings"'),
+    ("assets/IMG_6821.jpg", 'В разделе "Backup & Restore" выберите "Import from Connection Link…"'),
+    ("assets/IMG_6822.jpg", 'В открывшемся окне нажмите "Разрешить вставку" — ссылка вставится из Telegram'),
 )
 
 ANDROID_PHOTOS = (
