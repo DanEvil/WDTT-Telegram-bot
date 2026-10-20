@@ -160,7 +160,7 @@ PLAN_BUTTONS: dict[str, str] = {}
 
 NAV_BUTTONS = {
     "🎁 Пробный период", "🛒 Купить", "👤 Моя подписка", "👥 Рефералы",
-    "📖 Инструкция", "🤖 Android — инструкция", "🍎 iOS — инструкция",
+    "📖 Инструкция", "🤖 Android", "🍎 iOS",
     "❓ Помощь", "🏠 Главное меню", "📊 Статистика",
     "👥 Клиенты", "⛔ Отозвать", "➕ Продлить", "🎁 Подарить", "🖥 Серверы",
     "➕ Добавить сервер", "🗑 Удалить сервер",
@@ -624,7 +624,7 @@ async def nav_ref(message: Message) -> None:
 async def nav_instruction(message: Message) -> None:
     kb = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🤖 Android — инструкция"), KeyboardButton(text="🍎 iOS — инструкция")],
+            [KeyboardButton(text="🤖 Android"), KeyboardButton(text="🍎 iOS")],
             [KeyboardButton(text="🏠 Главное меню")],
         ],
         resize_keyboard=True,
@@ -634,14 +634,14 @@ async def nav_instruction(message: Message) -> None:
     await message.answer(INSTRUCTION_INTRO, reply_markup=kb)
 
 
-@router.message(F.text == "🤖 Android — инструкция", StateFilter(None))
+@router.message(F.text == "🤖 Android", StateFilter(None))
 async def nav_instr_android(message: Message) -> None:
     await message.answer(INSTRUCTION_ANDROID)
     for path, caption in ANDROID_PHOTOS:
         await message.answer_photo(FSInputFile(path), caption=caption)
 
 
-@router.message(F.text == "🍎 iOS — инструкция", StateFilter(None))
+@router.message(F.text == "🍎 iOS", StateFilter(None))
 async def nav_instr_ios(message: Message) -> None:
     await message.answer(INSTRUCTION_IOS)
     for path, caption in INSTRUCTION_PHOTOS:
