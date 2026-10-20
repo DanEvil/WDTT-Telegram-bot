@@ -190,6 +190,12 @@ INSTRUCTION_PHOTOS = (
     ("assets/IMG_6822.jpg", "Разрешить вставку"),
 )
 
+ANDROID_PHOTOS = (
+    ("assets/IMG_6833.jpeg", 'Откройте приложение и перейдите во вкладку "Туннель"'),
+    ("assets/IMG_6834.jpeg", 'Включите переключатель "Режим ссылки"'),
+    ("assets/IMG_6835.jpeg", 'Вставьте вашу ссылку wdtt:// и нажмите "Подключить"'),
+)
+
 HELP_TEXT = (
     "ℹ️ <b>Как пользоваться ботом</b>\n\n"
     "1. Нажмите «🛒 Купить» и выберите тариф.\n"
@@ -609,6 +615,9 @@ async def cb_instr_android(cq: CallbackQuery) -> None:
     await cq.answer()
     m = await cq.message.answer(INSTRUCTION_ANDROID)
     _chat_log[m.chat.id].append(m.message_id)
+    for path, caption in ANDROID_PHOTOS:
+        p = await cq.message.answer_photo(FSInputFile(path), caption=caption)
+        _chat_log[p.chat.id].append(p.message_id)
 
 
 @router.callback_query(F.data == "instr_ios")
