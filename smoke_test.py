@@ -299,6 +299,17 @@ async def test_db(base_url):
     assert (await db.get_customer(2))["wdtt_password"] is None
     assert await db.get_expired_customers() == []
 
+    # reminders: биты 3/2/1, сброс при продлении (upsert) и очистке
+    await db.upsert_customer(4, "pw4", now + 3 * 86400, "week", sid)
+    assert await db.claim_reminder(4, 3) is True
+    assert await db.claim_reminder(4, 3) is False
+    assert await db.claim_reminder(4, 2) is True
+    await db.upsert_customer(4, "pw4", now + 10 * 86400, "month", sid)
+    assert (await db.get_customer(4))["reminder_sent"] == 0
+    assert await db.claim_reminder(4, 1) is True
+    await db.clear_customer(4)
+    assert (await db.get_customer(4))["reminder_sent"] == 0
+
     # payments: pending -> paid -> fulfilled
     await db.add_payment(1, "u1", "pay-1", "month", "249.00")
     pending = await db.get_pending_payments()
@@ -422,6 +433,28 @@ async def test_bot_flow(panel_base_url):
     users[pwd1]["down_bytes"] = int(4.3 * gb)
     profile = await botmod.profile_text(111)
     assert "7.0 ГБ из 100 ГБ" in profile, profile
+
+    # напоминания за 3/2/1 день: FakeBot собирает сообщения
+    def expired_in(days: float) -> int:
+        return now + int(days * 86400)
+
+    sent.clear()
+    await db.upsert_customer(501, "pw-r3", expired_in(2.6), "month", fake_sid)
+    n = await botmod.send_expiry_reminders()
+    assert n == 1 and len(sent) == 1, (n, sent)
+    assert sent[0][0] == 501 and "через 3 дн." in sent[0][1], sent
+    assert await botmod.send_expiry_reminders() == 0  # без повторов
+
+    sent.clear()
+    await db.upsert_customer(502, "pw-r1", expired_in(0.4), "month", fake_sid)
+    n = await botmod.send_expiry_reminders()
+    assert n == 1 and len(sent) == 1
+    assert sent[0][0] == 502 and "завтра" in sent[0][1], sent
+
+    sent.clear()
+    await db.upsert_customer(503, "pw-r5", expired_in(9.1), "month", fake_sid)
+    n = await botmod.send_expiry_reminders()
+    assert n == 0 and sent == []
 
     # 3) ключ потерян в панели: создаётся новый
     await db.upsert_customer(333, "ghost", now - 3600, "month", fake_sid)

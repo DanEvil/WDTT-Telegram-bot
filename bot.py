@@ -49,6 +49,7 @@ from db import (
     get_server,
     has_used_trial,
     init_db,
+    claim_reminder,
     list_plans,
     list_servers,
     claim_trial,
@@ -1404,10 +1405,40 @@ async def poller() -> None:
         await asyncio.sleep(config.POLL_INTERVAL)
 
 
+async def send_expiry_reminders() -> int:
+    """Разовые напоминания за 3/2/1 день до окончания. Возвращает число отправленных."""
+    REMINDER_DAYS = (3, 2, 1)
+    sent = 0
+    now = int(time.time())
+    for c in await get_active_customers():
+        exp = int(c["expires_at"] or 0)
+        if not c["wdtt_password"] or exp <= now:
+            continue
+        days_left = -((now - exp) // 86400)  # ceil((exp - now) / 86400)
+        # ближайший порог напоминания: 3 -> 2 -> 1 день
+        for d in REMINDER_DAYS:
+            if days_left > d:
+                continue
+            if await claim_reminder(c["telegram_id"], d):
+                tail = "завтра" if days_left <= 1 else f"через {days_left} дн."
+                try:
+                    await bot.send_message(
+                        c["telegram_id"],
+                        f"⏳ {tail} ({fmt_date(exp)}) истекает ваша подписка на WDTT. "
+                        "Продлить: кнопка 🛒 Купить",
+                    )
+                    sent += 1
+                except Exception:
+                    pass
+            break
+    return sent
+
+
 async def expiry_worker() -> None:
-    """Раз в час удаляет истёкшие ключи из панели и уведомляет клиентов."""
+    """Раз в час отправляет напоминания (за 3/2/1 день) и удаляет истёкшие ключи."""
     while True:
         try:
+            await send_expiry_reminders()
             for c in await get_expired_customers():
                 cleared = False
                 try:

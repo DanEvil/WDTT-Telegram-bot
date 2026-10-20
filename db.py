@@ -84,6 +84,9 @@ async def init_db() -> None:
         cols = [r["name"] for r in (await (await db.execute("PRAGMA table_info(customers)")).fetchall())]
         if "server_id" not in cols:
             await db.execute("ALTER TABLE customers ADD COLUMN server_id INTEGER")
+        # Миграция: битовая маска отправленных напоминаний (за 3/2/1 день)
+        if "reminder_sent" not in cols:
+            await db.execute("ALTER TABLE customers ADD COLUMN reminder_sent INTEGER NOT NULL DEFAULT 0")
 
 
 # ---------- payments ----------
@@ -155,7 +158,8 @@ async def upsert_customer(telegram_id: int, wdtt_password: str, expires_at: int,
                 wdtt_password = excluded.wdtt_password,
                 expires_at    = excluded.expires_at,
                 plan_id       = excluded.plan_id,
-                server_id     = excluded.server_id
+                server_id     = excluded.server_id,
+                reminder_sent = 0
             """,
             (telegram_id, username, wdtt_password, expires_at, plan_id, server_id, int(time.time())),
         )
@@ -164,7 +168,8 @@ async def upsert_customer(telegram_id: int, wdtt_password: str, expires_at: int,
 async def clear_customer(telegram_id: int) -> None:
     async with conn() as db:
         await db.execute(
-            "UPDATE customers SET wdtt_password = NULL, expires_at = 0, plan_id = NULL WHERE telegram_id = ?",
+            "UPDATE customers SET wdtt_password = NULL, expires_at = 0, plan_id = NULL, reminder_sent = 0 "
+            "WHERE telegram_id = ?",
             (telegram_id,),
         )
 
@@ -189,6 +194,20 @@ async def get_active_customers() -> list[dict]:
         )
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+
+async def claim_reminder(telegram_id: int, days: int) -> bool:
+    """Отметить напоминание «за N дней» отправленным.
+
+    Битовая маска в customers.reminder_sent (бит 1 << N). True — отправлено впервые.
+    """
+    async with conn() as db:
+        cur = await db.execute(
+            "UPDATE customers SET reminder_sent = reminder_sent | (1 << ?) "
+            "WHERE telegram_id = ? AND wdtt_password IS NOT NULL AND (reminder_sent & (1 << ?)) = 0",
+            (days, telegram_id, days),
+        )
+        return cur.rowcount == 1
 
 
 async def get_all_customers() -> list[dict]:
