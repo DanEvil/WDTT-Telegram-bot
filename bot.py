@@ -20,7 +20,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
+    CallbackQuery,
     FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
@@ -165,16 +168,20 @@ NAV_BUTTONS = {
     "⚙️ Админка",
 }
 
-INSTRUCTION_TEXT = (
-    "📖 <b>Подключение к WDTT</b>\n\n"
+INSTRUCTION_INTRO = "📖 <b>Подключение к WDTT</b>\n\nВыберите вашу платформу:"
+
+INSTRUCTION_ANDROID = (
     "🤖 <b>Android</b> — установите приложение "
     "<a href='https://github.com/amurcanov/proxy-turn-vk-android/releases/download/v1.2.4/WDTT-universal.apk'>WDTT</a>, "
-    "добавьте конфигурацию по ссылке и подключитесь.\n\n"
+    "добавьте конфигурацию по ссылке и подключитесь."
+)
+
+INSTRUCTION_IOS = (
     "🍎 <b>iOS</b> — загрузите приложение "
     "<a href='https://apps.apple.com/app/testflight/id899247664'>TestFlight</a> "
     "из App Store на устройство, затем откройте "
     "<a href='https://testflight.apple.com/join/ANm6cmDv'>эту ссылку</a>, "
-    "установите клиент и подключитесь, как показано на скриншотах ниже.\n"
+    "установите клиент и подключитесь, как показано на скриншотах ниже."
 )
 
 INSTRUCTION_PHOTOS = (
@@ -589,9 +596,29 @@ async def nav_ref(message: Message) -> None:
 
 @router.message(F.text == "📖 Инструкция", StateFilter(None))
 async def nav_instruction(message: Message) -> None:
-    await message.answer(INSTRUCTION_TEXT)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🤖 Android", callback_data="instr_android")],
+        [InlineKeyboardButton(text="🍎 iOS", callback_data="instr_ios")],
+    ])
+    m = await message.answer(INSTRUCTION_INTRO, reply_markup=kb)
+    _chat_log[m.chat.id].append(m.message_id)
+
+
+@router.callback_query(F.data == "instr_android")
+async def cb_instr_android(cq: CallbackQuery) -> None:
+    await cq.answer()
+    m = await cq.message.answer(INSTRUCTION_ANDROID)
+    _chat_log[m.chat.id].append(m.message_id)
+
+
+@router.callback_query(F.data == "instr_ios")
+async def cb_instr_ios(cq: CallbackQuery) -> None:
+    await cq.answer()
+    m = await cq.message.answer(INSTRUCTION_IOS)
+    _chat_log[m.chat.id].append(m.message_id)
     for path, caption in INSTRUCTION_PHOTOS:
-        await message.answer_photo(FSInputFile(path), caption=caption)
+        p = await cq.message.answer_photo(FSInputFile(path), caption=caption)
+        _chat_log[p.chat.id].append(p.message_id)
 
 
 @router.message(F.text == "❓ Помощь", StateFilter(None))
