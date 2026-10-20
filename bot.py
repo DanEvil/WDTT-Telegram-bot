@@ -48,7 +48,9 @@ from db import (
     init_db,
     list_plans,
     list_servers,
-    mark_trial_used,
+    claim_trial,
+    mark_referral_rewarded,
+    release_trial,
     server_active_counts,
     set_payment_status,
     stats,
@@ -201,7 +203,10 @@ HELP_TEXT = (
 # ---------- вспомогательные ----------
 
 def fmt_traffic(gb) -> str:
-    return "безлимит" if not gb else f"{int(gb)} ГБ"
+    if not gb:
+        return "безлимит"
+    rounded = float(gb)
+    return f"{rounded:g} ГБ"
 
 
 def fmt_date(ts) -> str:
@@ -364,7 +369,13 @@ async def _ensure_vk_hash(client: WdttClient, pwd: str) -> None:
 
 
 async def grant_referral_reward(referred_id: int) -> None:
-    """+N дней пригласившему после первой оплаты приглашённого."""
+    """+N дней пригласившему после первой оплаты приглашённого.
+
+    claim_referral_reward только выбирает необработанного реферала;
+    пометка «rewarded» ставится (mark_referral_rewarded) после успешного
+    применения, так что сбой не сжигает бонус — он будет применён при
+    следующей оплате приглашённого.
+    """
     days = config.REFERRAL_REWARD_DAYS
     if days <= 0:
         return
@@ -374,6 +385,7 @@ async def grant_referral_reward(referred_id: int) -> None:
     referrer = await get_customer(referrer_id)
     now = int(time.time())
     if not referrer or not referrer["wdtt_password"] or int(referrer["expires_at"] or 0) <= now:
+        # бонус не сгорает: ждём, пока пригласивший обновит подписку
         try:
             await bot.send_message(
                 referrer_id,
@@ -400,6 +412,8 @@ async def grant_referral_reward(referred_id: int) -> None:
                                  total_gb=total_gb, max_devices=max_devices)
         await upsert_customer(referrer_id, pwd, expires, referrer["plan_id"], server_id,
                               username=referrer["username"])
+        if not await mark_referral_rewarded(referred_id):
+            log.warning("реферал tg %s уже был помечен — бонус мог быть применён раньше", referred_id)
         await bot.send_message(
             referrer_id,
             f"🎁 Бонус за друга: +{days} дн. к вашей подписке! Действует до {fmt_date(expires)}.",
@@ -531,13 +545,14 @@ async def profile_text(telegram_id: int) -> str:
 # ---------- старт (единственный технический обработчик команды) ----------
 
 @router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, state: FSMContext) -> None:
     # реферальная ссылка имеет вид https://t.me/bot?start=ref_<tg_id>
     args = (message.text or "").split()
     if len(args) > 1 and args[1].startswith("ref_"):
         raw = args[1][4:]
         if raw.isdigit() and int(raw) != message.from_user.id:
             await add_referral(message.from_user.id, int(raw))
+    await state.clear()  # сбрасываем любой незавершённый FSM-диалог
 
     await message.answer(
         "👋 Привет! Это бот продажи доступа к <b>WDTT</b>.\n\n"
@@ -604,23 +619,25 @@ async def nav_admin_menu(message: Message) -> None:
 @router.message(F.text == "🎁 Пробный период", StateFilter(None))
 async def nav_trial(message: Message) -> None:
     user_id = message.from_user.id
-    if await has_used_trial(user_id):
-        await message.answer("Вы уже использовали пробный период!")
-        return
     customer = await get_customer(user_id)
     now = int(time.time())
     if customer and customer["wdtt_password"] and int(customer["expires_at"] or 0) > now:
         await message.answer("У вас уже есть активная подписка!")
         return
+    # атомарно занимаем слот до вызова панели — двойная заявка безопасна;
+    # при провале выдачи слот освобождается, можно повторить
+    if not await claim_trial(user_id):
+        await message.answer("Вы уже использовали пробный период!")
+        return
 
     try:
         client, pwd, _ = await grant_access(user_id, message.from_user.username, TRIAL)
-    except Exception as e:
+    except Exception:
         log.exception("ошибка выдачи пробного периода tg %s", user_id)
-        await message.answer(f"Ошибка создания пробного периода: {e}")
+        await release_trial(user_id)
+        await message.answer("⚠️ Не удалось создать пробный период. Попробуйте ещё раз.")
         return
 
-    await mark_trial_used(user_id)
     section = await _links_section(client, pwd)
     await message.answer(
         "🎁 <b>Пробный период активирован!</b>\n\n"
@@ -679,6 +696,31 @@ async def nav_button_during_state(message: Message, state: FSMContext) -> None:
 
 # ---------- исполнение платежей ----------
 
+async def _access_already_granted(telegram_id: int, plan: dict) -> bool:
+    """True, если подписка в панели уже продлена на срок этого платежа.
+
+    Страховка на случай падения между grant_access и записью «fulfilled»:
+    без неё поллер повторно продлил бы подписку за одну оплату.
+    """
+    cust = await get_customer(telegram_id)
+    if not cust or not cust["wdtt_password"]:
+        return False
+    try:
+        client = await get_client(cust["server_id"])
+        info = await client.get_user_info(cust["wdtt_password"]) or {}
+    except Exception as e:
+        log.info("не удалось проверить текущий срок tg %s: %s", telegram_id, e)
+        return False
+    panel_expires = int(info.get("expires_at") or 0)
+    now = int(time.time())
+    if panel_expires <= now:
+        return False
+    db_expires = int(cust["expires_at"] or 0)
+    expected = max(now, db_expires) + int(plan["days"]) * 86400
+    # панель могла выдать срок чуть раньше наших вычислений — допуск 10 минут
+    return panel_expires + 600 >= expected
+
+
 async def fulfill_payment(payment_id: str) -> None:
     async with fulfill_lock:
         row = await get_payment(payment_id)
@@ -699,6 +741,26 @@ async def fulfill_payment(payment_id: str) -> None:
         if yk["status"] != "succeeded":
             return  # ещё не оплачен — проверим на следующей итерации
 
+        # сверяем сумму и метаданные с нашей записью (защита от чужих платежей
+        # на том же магазине и от подменённых webhook-уведомлений)
+        try:
+            yk_amount = float(yk.get("amount") or 0)
+        except (TypeError, ValueError):
+            yk_amount = -1.0
+        if abs(yk_amount - float(row["amount"])) > 0.01:
+            await notify_admin(
+                f"🚨 <b>Платёж {payment_id}</b>: сумма в ЮKassa ({yk_amount:.2f} ₽) "
+                f"не совпадает с записью ({fmt_price(row['amount'])} ₽) — выдача прервана."
+            )
+            return
+        yk_tg = (yk.get("metadata") or {}).get("telegram_id")
+        if yk_tg and str(yk_tg) != str(row["telegram_id"]):
+            await notify_admin(
+                f"🚨 <b>Платёж {payment_id}</b>: metadata.telegram_id={yk_tg}, "
+                f"в записи — {row['telegram_id']} — выдача прервана."
+            )
+            return
+
         if row["status"] == "pending":
             await set_payment_status(payment_id, "paid", paid_at=yk.get("paid_at"))
 
@@ -709,6 +771,14 @@ async def fulfill_payment(payment_id: str) -> None:
                 f"⚠️ Платёж {payment_id} оплачен, но тариф «{row['plan_id']}» не найден — "
                 f"доступ клиенту {telegram_id} не выдан."
             )
+            return
+
+        # идемпотентность при повторе после сбоя: если подписка в панели уже
+        # продлена на срок этого платежа — не выдаём второй раз
+        if await _access_already_granted(telegram_id, plan):
+            log.info("платёж %s уже выдан (по сроку в панели) — пропускаем", payment_id)
+            if row["status"] != "fulfilled":
+                await set_payment_status(payment_id, "fulfilled")
             return
 
         try:
@@ -1288,19 +1358,22 @@ async def expiry_worker() -> None:
     while True:
         try:
             for c in await get_expired_customers():
+                cleared = False
                 try:
                     client = await get_client(c["server_id"])
                     await client.delete_user(c["wdtt_password"])
+                    cleared = True
                 except Exception:
                     log.exception("не удалось удалить истёкший ключ tg %s", c["telegram_id"])
-                await clear_customer(c["telegram_id"])
-                try:
-                    await bot.send_message(
-                        c["telegram_id"],
-                        "⏰ Ваша подписка на WDTT истекла. Продлить: кнопка 🛒 Купить",
-                    )
-                except Exception:
-                    pass
+                if cleared:
+                    await clear_customer(c["telegram_id"])
+                    try:
+                        await bot.send_message(
+                            c["telegram_id"],
+                            "⏰ Ваша подписка на WDTT истекла. Продлить: кнопка 🛒 Купить",
+                        )
+                    except Exception:
+                        pass
         except Exception:
             log.exception("expiry loop")
         await asyncio.sleep(3600)

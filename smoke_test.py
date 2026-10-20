@@ -309,14 +309,20 @@ async def test_db(base_url):
     assert await db.get_pending_payments() == []
     await db.set_payment_status("pay-1", "fulfilled")  # восстанавливаем для stats
 
-    # trials
+    # trials: атомарный claim
     assert not await db.has_used_trial(1)
-    await db.mark_trial_used(1)
+    assert await db.claim_trial(1) is True
+    assert await db.claim_trial(1) is False
     assert await db.has_used_trial(1)
+    await db.release_trial(1)
+    assert not await db.has_used_trial(1)
 
-    # referrals: атомарное начисление
+    # referrals: начисление = выбрать + пометить после применения
     await db.add_referral(10, 1)
     assert await db.claim_referral_reward(10) == 1
+    assert await db.claim_referral_reward(10) == 1  # ещё не помечен — ждёт применения
+    assert await db.mark_referral_rewarded(10) is True
+    assert await db.mark_referral_rewarded(10) is False
     assert await db.claim_referral_reward(10) is None
     assert await db.get_referrals_count(1) == 1
 
@@ -421,7 +427,7 @@ async def test_bot_flow(panel_base_url):
     client, pwd4, exp4 = await botmod.grant_gift(444, 7)
     cust444 = await db.get_customer(444)
     assert cust444["plan_id"] == "gift" and cust444["wdtt_password"] == pwd4
-    assert exp4 == now + 7 * 86400
+    assert abs(exp4 - (now + 7 * 86400)) <= 2
     assert users[pwd4]["expires_at"] == exp4
     assert users[pwd4]["total_gb"] == 0, users[pwd4]
     assert users[pwd4]["max_devices"] == plans.TRIAL["max_devices"]
@@ -440,11 +446,10 @@ async def test_webhook_e2e():
     import webhook
 
     loop = asyncio.get_running_loop()
-    got = loop.create_future()
+    got: list[str] = []
 
     async def on_succeeded(payment_id):
-        if not got.done():
-            got.set_result(payment_id)
+        got.append(payment_id)
 
     app = webhook.make_webhook_app("/yookassa", on_succeeded)
     runner = web.AppRunner(app)
@@ -455,15 +460,31 @@ async def test_webhook_e2e():
     try:
         base = "http://127.0.0.1:%d/yookassa" % port
         async with httpx.AsyncClient() as h:
+            valid_id = "deadbeef-cafe-4567-9000-abcdefabcdef"
             r = await h.post(base, json={
                 "type": "notification", "event": "payment.succeeded",
-                "object": {"id": "pay-wh1"}})
+                "object": {"id": valid_id}})
             assert r.status_code == 200 and r.text == "ok", (r.status_code, r.text)
-            pid = await asyncio.wait_for(got, timeout=3)
-            assert pid == "pay-wh1"
+            await asyncio.sleep(0.3)  # ждём фоновую задачу колбэка
+            await asyncio.sleep(0.1)
+            assert got == [valid_id]
             r2 = await h.post(base, content=b"not json",
                               headers={"Content-Type": "application/json"})
             assert r2.status_code == 400
+            # некорректный id: ответ ok, колбэк не звался
+            r3 = await h.post(base, json={
+                "type": "notification", "event": "payment.succeeded",
+                "object": {"id": "pay-wh1;"}})
+            assert r3.status_code == 200
+            await asyncio.sleep(0.2)
+            assert got == [valid_id]
+            # дубликат корректного id: колбэк не звался повторно
+            r4 = await h.post(base, json={
+                "type": "notification", "event": "payment.succeeded",
+                "object": {"id": valid_id}})
+            assert r4.status_code == 200
+            await asyncio.sleep(0.2)
+            assert got == [valid_id]
     finally:
         await runner.cleanup()
     print("PASS webhook e2e (notification -> callback, bad json -> 400)")

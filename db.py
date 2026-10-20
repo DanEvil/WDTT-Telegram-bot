@@ -113,14 +113,22 @@ async def set_payment_status(payment_id: str, status: str, paid_at: int | None =
         )
 
 
-async def get_pending_payments() -> list[dict]:
+async def get_pending_payments(max_age_days: int = 7) -> list[dict]:
     """Неоплаченные ('pending') и оплаченные, но не выданные ('paid') платежи.
 
     Статусы: pending -> paid (деньги получены) -> fulfilled (доступ выдан);
     cancelled — платёж отменён клиентом/ЮKassa.
+
+    Свежие ('paid') — всегда; старые 'pending' не старше max_age_days
+    (заброшенные корзины не должны грузить API ЮKassa вечно).
     """
+    cutoff = int(time.time()) - max_age_days * 86400
     async with conn() as db:
-        cur = await db.execute("SELECT * FROM payments WHERE status IN ('pending', 'paid')")
+        cur = await db.execute(
+            "SELECT * FROM payments WHERE (status = 'paid') OR "
+            "(status = 'pending' AND created_at > ?)",
+            (cutoff,),
+        )
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
@@ -198,6 +206,27 @@ async def has_used_trial(telegram_id: int) -> bool:
         return await cur.fetchone() is not None
 
 
+async def claim_trial(telegram_id: int) -> bool:
+    """Атомарно занять слот пробного периода.
+
+    Возвращает True, если слот успешно занят и пробный период можно выдавать;
+    False, если пользователь уже получал пробный период (занят раньше).
+    """
+    async with conn() as db:
+        cur = await db.execute(
+            "INSERT OR IGNORE INTO trials (telegram_id, used_at) VALUES (?, ?)",
+            (telegram_id, int(time.time())),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def release_trial(telegram_id: int) -> None:
+    """Освободить слот (если выдача провалилась после claim)."""
+    async with conn() as db:
+        await db.execute("DELETE FROM trials WHERE telegram_id = ?", (telegram_id,))
+
+
 async def mark_trial_used(telegram_id: int) -> None:
     async with conn() as db:
         await db.execute(
@@ -218,7 +247,12 @@ async def add_referral(referred_id: int, referrer_id: int) -> None:
 
 
 async def claim_referral_reward(referred_id: int) -> int | None:
-    """Атомарно помечает реферала вознаграждённым и возвращает referrer_id (или None)."""
+    """Возвращает referrer_id первого необработанного реферала (или None).
+
+    Не помечает реферала вознаграждённым: пометка ставится mark_referral_rewarded
+    только после фактического применения бонуса (иначе сбой применения
+    привёл бы к потере бонуса навсегда).
+    """
     async with conn() as db:
         cur = await db.execute(
             "SELECT referrer_id, rewarded FROM referrals WHERE referred_id = ?", (referred_id,)
@@ -226,11 +260,18 @@ async def claim_referral_reward(referred_id: int) -> int | None:
         row = await cur.fetchone()
         if not row or row["rewarded"]:
             return None
-        await db.execute(
-            "UPDATE referrals SET rewarded = 1, rewarded_at = ? WHERE referred_id = ?",
+        return row["referrer_id"]
+
+
+async def mark_referral_rewarded(referred_id: int) -> bool:
+    """Атомарно помечает реферала вознаграждённым (только если ещё не помечен)."""
+    async with conn() as db:
+        cur = await db.execute(
+            "UPDATE referrals SET rewarded = 1, rewarded_at = ? "
+            "WHERE referred_id = ? AND rewarded = 0",
             (int(time.time()), referred_id),
         )
-        return row["referrer_id"]
+        return cur.rowcount > 0
 
 
 async def get_referrals_count(referrer_id: int) -> int:
