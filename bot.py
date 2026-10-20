@@ -50,6 +50,7 @@ from db import (
     has_used_trial,
     init_db,
     claim_reminder,
+    claim_traffic_notice,
     list_plans,
     list_servers,
     claim_trial,
@@ -1434,11 +1435,49 @@ async def send_expiry_reminders() -> int:
     return sent
 
 
+TRAFFIC_NOTICE_REMAINING = 150 * 1024**2  # предупреждать, когда осталось <= 150 МБ
+
+
+async def send_traffic_warnings() -> int:
+    """Предупреждение, когда остаток лимита трафика упал до 150 МБ. Возвращает число отправленных."""
+    sent = 0
+    for c in await get_active_customers():
+        if not c["wdtt_password"]:
+            continue
+        plan = await get_plan(c["plan_id"]) or ALL_PLANS_BY_ID.get(c["plan_id"])
+        limit_gb = (plan or {}).get("traffic_gb") or 0
+        if not limit_gb:
+            continue
+        try:
+            client = await get_client(c["server_id"])
+            info = await client.get_user_info(c["wdtt_password"])
+            if not info:
+                continue
+            used = int(info.get("up_bytes") or 0) + int(info.get("down_bytes") or 0)
+            remaining = int(float(limit_gb) * 1024**3) - used
+        except Exception:
+            continue
+        if remaining > TRAFFIC_NOTICE_REMAINING:
+            continue
+        if await claim_traffic_notice(c["telegram_id"]):
+            try:
+                await bot.send_message(
+                    c["telegram_id"],
+                    f"📉 Осталось {fmt_bytes(remaining)} из {fmt_traffic(limit_gb)} — трафик скоро закончится. "
+                    "Продлить: кнопка 🛒 Купить",
+                )
+                sent += 1
+            except Exception:
+                pass
+    return sent
+
+
 async def expiry_worker() -> None:
-    """Раз в час отправляет напоминания (за 3/2/1 день) и удаляет истёкшие ключи."""
+    """Раз в час отправляет напоминания и удаляет истёкшие ключи."""
     while True:
         try:
             await send_expiry_reminders()
+            await send_traffic_warnings()
             for c in await get_expired_customers():
                 cleared = False
                 try:

@@ -87,6 +87,9 @@ async def init_db() -> None:
         # Миграция: битовая маска отправленных напоминаний (за 3/2/1 день)
         if "reminder_sent" not in cols:
             await db.execute("ALTER TABLE customers ADD COLUMN reminder_sent INTEGER NOT NULL DEFAULT 0")
+        # Миграция: было ли отправлено предупреждение о трафике (<150 МБ)
+        if "traffic_notified" not in cols:
+            await db.execute("ALTER TABLE customers ADD COLUMN traffic_notified INTEGER NOT NULL DEFAULT 0")
 
 
 # ---------- payments ----------
@@ -159,7 +162,8 @@ async def upsert_customer(telegram_id: int, wdtt_password: str, expires_at: int,
                 expires_at    = excluded.expires_at,
                 plan_id       = excluded.plan_id,
                 server_id     = excluded.server_id,
-                reminder_sent = 0
+                reminder_sent = 0,
+                traffic_notified = 0
             """,
             (telegram_id, username, wdtt_password, expires_at, plan_id, server_id, int(time.time())),
         )
@@ -168,8 +172,8 @@ async def upsert_customer(telegram_id: int, wdtt_password: str, expires_at: int,
 async def clear_customer(telegram_id: int) -> None:
     async with conn() as db:
         await db.execute(
-            "UPDATE customers SET wdtt_password = NULL, expires_at = 0, plan_id = NULL, reminder_sent = 0 "
-            "WHERE telegram_id = ?",
+            "UPDATE customers SET wdtt_password = NULL, expires_at = 0, plan_id = NULL, "
+            "reminder_sent = 0, traffic_notified = 0 WHERE telegram_id = ?",
             (telegram_id,),
         )
 
@@ -206,6 +210,17 @@ async def claim_reminder(telegram_id: int, days: int) -> bool:
             "UPDATE customers SET reminder_sent = reminder_sent | (1 << ?) "
             "WHERE telegram_id = ? AND wdtt_password IS NOT NULL AND (reminder_sent & (1 << ?)) = 0",
             (days, telegram_id, days),
+        )
+        return cur.rowcount == 1
+
+
+async def claim_traffic_notice(telegram_id: int) -> bool:
+    """Пометить предупреждение «мало трафика» отправленным. True — отправлено впервые."""
+    async with conn() as db:
+        cur = await db.execute(
+            "UPDATE customers SET traffic_notified = 1 "
+            "WHERE telegram_id = ? AND wdtt_password IS NOT NULL AND traffic_notified = 0",
+            (telegram_id,),
         )
         return cur.rowcount == 1
 

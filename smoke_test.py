@@ -309,6 +309,12 @@ async def test_db(base_url):
     assert await db.claim_reminder(4, 1) is True
     await db.clear_customer(4)
     assert (await db.get_customer(4))["reminder_sent"] == 0
+    # traffic notice flag
+    await db.upsert_customer(6, "pw6", now + 86400, "week", sid)
+    assert await db.claim_traffic_notice(6) is True
+    assert await db.claim_traffic_notice(6) is False
+    await db.upsert_customer(6, "pw6", now + 86400, "month", sid)
+    assert (await db.get_customer(6))["traffic_notified"] == 0
 
     # payments: pending -> paid -> fulfilled
     await db.add_payment(1, "u1", "pay-1", "month", "249.00")
@@ -342,7 +348,7 @@ async def test_db(base_url):
     # stats
     s = await db.stats()
     assert s["paid"] == 1 and abs(s["revenue"] - 249.0) < 0.01
-    assert s["active"] == 1  # только tg 1
+    assert s["active"] == 2  # активные: tg 1 и 6
 
     # delete plan и восстановление
     await db.delete_plan("week")
@@ -440,21 +446,41 @@ async def test_bot_flow(panel_base_url):
 
     sent.clear()
     await db.upsert_customer(501, "pw-r3", expired_in(2.6), "month", fake_sid)
-    n = await botmod.send_expiry_reminders()
-    assert n == 1 and len(sent) == 1, (n, sent)
-    assert sent[0][0] == 501 and "через 3 дн." in sent[0][1], sent
-    assert await botmod.send_expiry_reminders() == 0  # без повторов
+    await botmod.send_expiry_reminders()
+    mine = [t for cid, t in sent if cid == 501]
+    assert len(mine) == 1 and "через 3 дн." in mine[0], mine
+    sent.clear()
+    await botmod.send_expiry_reminders()
+    assert not [t for cid, t in sent if cid == 501]  # без повторов
 
     sent.clear()
     await db.upsert_customer(502, "pw-r1", expired_in(0.4), "month", fake_sid)
-    n = await botmod.send_expiry_reminders()
-    assert n == 1 and len(sent) == 1
-    assert sent[0][0] == 502 and "завтра" in sent[0][1], sent
+    await botmod.send_expiry_reminders()
+    mine = [t for cid, t in sent if cid == 502]
+    assert len(mine) == 1 and "завтра" in mine[0], mine
 
     sent.clear()
     await db.upsert_customer(503, "pw-r5", expired_in(9.1), "month", fake_sid)
-    n = await botmod.send_expiry_reminders()
-    assert n == 0 and sent == []
+    await botmod.send_expiry_reminders()
+    assert not [t for cid, t in sent if cid == 503]
+
+    # предупреждение о трафике при остатке <= 150 МБ (план week: 20 ГБ)
+    mb = 1024**2
+    users["pw-ok"] = {"password": "***", "password_key": "pw-ok", "up_bytes": int(20 * gb - 200 * mb), "down_bytes": 0}
+    users["pw-low"] = {"password": "***", "password_key": "pw-low", "up_bytes": int(20 * gb - 100 * mb), "down_bytes": 0}
+    await db.upsert_customer(504, "pw-ok", expired_in(30), "week", fake_sid)
+    sent.clear()
+    n = await botmod.send_traffic_warnings()
+    assert n == 0 and not [t for cid, t in sent if cid == 504]
+    await db.upsert_customer(505, "pw-low", expired_in(30), "week", fake_sid)
+    sent.clear()
+    n = await botmod.send_traffic_warnings()
+    assert n == 1, n
+    mine = [t for cid, t in sent if cid == 505]
+    assert len(mine) == 1 and "100 МБ" in mine[0], mine
+    sent.clear()
+    await botmod.send_traffic_warnings()
+    assert not [t for cid, t in sent if cid == 505]  # без повторов
 
     # 3) ключ потерян в панели: создаётся новый
     await db.upsert_customer(333, "ghost", now - 3600, "month", fake_sid)
