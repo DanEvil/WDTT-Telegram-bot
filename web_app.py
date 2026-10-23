@@ -59,6 +59,11 @@ def _get_session(request: web.Request) -> dict | None:
         return SESSIONS[sid]
     return None
 
+def set_session(response: web.Response, telegram_id: int, username: str) -> None:
+    sid = uuid.uuid4().hex
+    SESSIONS[sid] = {"telegram_id": telegram_id, "username": username, "created": time.time()}
+    response.set_cookie("session_id", sid, httponly=True, samesite="Lax", path="/")
+
 def _require_session(request: web.Request) -> dict | None:
     s = _get_session(request)
     if not s:
@@ -433,6 +438,95 @@ async def _ensure_vk_hash(client: WdttClient, pwd: str) -> None:
     except Exception as e:
         log.warning("VK-вызов для %s не создан (%s)", pwd[:2], e)
 
+# ---------- API для мобильного приложения ----------
+
+async def api_plans(request: web.Request) -> web.Response:
+    """GET /api/plans — список тарифов (JSON) для Android-приложения."""
+    plans = []
+    for p in list_plans() or list(PLANS):
+        plans.append({
+            "id": p["id"],
+            "name": p["name"],
+            "price": float(p["price"]),
+            "currency": "RUB",
+            "days": p["days"],
+            "traffic_gb": p.get("traffic_gb", 0),
+            "max_devices": p.get("max_devices", 1),
+        })
+    return web.json_response({"plans": plans})
+
+
+async def api_create_payment(request: web.Request) -> web.Response:
+    """POST /api/create-payment — создать платёж ЮKassa.
+
+    Тело JSON: {"telegram_id": int, "plan_id": str, "username": str?}
+    Ответ: {"payment_id", "url", "amount", "currency"}
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+
+    tg_id = data.get("telegram_id")
+    plan_id = data.get("plan_id")
+    if not tg_id or not plan_id:
+        return web.json_response({"error": "missing fields"}, status=400)
+
+    await init_db()
+    plan = await get_plan(str(plan_id)) or (ALL_PLANS_BY_ID.get(str(plan_id)) if isinstance(ALL_PLANS_BY_ID, dict) else None)
+    if not plan:
+        return web.json_response({"error": "plan not found"}, status=404)
+
+    try:
+        payment = await create_payment(plan, int(tg_id))
+    except Exception as e:
+        log.exception("api create payment failed")
+        return web.json_response({"error": str(e)}, status=500)
+
+    if not payment.get("url"):
+        return web.json_response({"error": "no payment url"}, status=500)
+
+    await add_payment(
+        telegram_id=int(tg_id),
+        username=data.get("username", ""),
+        payment_id=payment["id"],
+        plan_id=str(plan["id"]),
+        amount=f"{float(plan['price']):.2f}",
+    )
+
+    return web.json_response({
+        "payment_id": payment["id"],
+        "url": payment["url"],
+        "amount": float(plan["price"]),
+        "currency": "RUB",
+    })
+
+
+async def api_check_payment(request: web.Request) -> web.Response:
+    """GET /api/check-payment?payment_id=... — статус платежа.
+
+    Ответ: {"status": "pending" | "succeeded", "payment_id": "..."}
+    """
+    payment_id = request.query.get("payment_id")
+    if not payment_id:
+        return web.json_response({"error": "missing payment_id"}, status=400)
+
+    await init_db()
+    row = await get_payment(payment_id)
+    if not row:
+        return web.json_response({"error": "not found"}, status=404)
+
+    try:
+        yk = await fetch_payment(payment_id)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=502)
+
+    status = yk.get("status", "pending") if isinstance(yk, dict) else "pending"
+    if status == "succeeded":
+        await set_payment_status(payment_id, "fulfilled")
+
+    return web.json_response({"status": status, "payment_id": payment_id})
+
 # ---------- приложение ----------
 
 def make_app() -> web.Application:
@@ -447,6 +541,11 @@ def make_app() -> web.Application:
     app.router.add_get("/instruction", handle_instruction)
     app.router.add_get("/admin", handle_admin)
     app.router.add_get("/logout", handle_logout)
+
+    # API для Android-приложения (покупка подписки из приложения)
+    app.router.add_get("/api/plans", api_plans)
+    app.router.add_post("/api/create-payment", api_create_payment)
+    app.router.add_get("/api/check-payment", api_check_payment)
     return app
 
 async def init_on_start(app: web.Application) -> None:
