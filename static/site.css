@@ -130,6 +130,13 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 }
 
 /* ===== вход через Telegram ===== */
+.tg-cta {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent),
+              0 10px 26px rgba(224,30,43,.18);
+}
+.tg-cta h3 { color: var(--accent-hover); }
+.tg-cta .btn { margin-right: .5rem; }
 .tg-login-link { color: #229ED9; font-weight: 600; }
 .tg-login-link:hover { color: #1c8dc1; }
 .tg-auth { margin-top: 1.1rem; text-align: center; }

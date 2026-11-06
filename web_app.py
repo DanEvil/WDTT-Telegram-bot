@@ -319,6 +319,7 @@ async def handle_index(request: web.Request) -> web.Response:
         </div>"""
     plans_html += "</div>"
     trial_html = ""
+    login_cta = ""
     if session:
         if not await has_used_trial_web(_sub_id(session)):
             trial_html = f"""
@@ -328,6 +329,17 @@ async def handle_index(request: web.Request) -> web.Response:
                   <a href="/buy/trial" class="btn secondary">Активировать пробный период</a>
                 </div>
                 """
+    else:
+        # для гостей — заметная кнопка входа через Telegram
+        login_cta = """
+    <div class="card tg-cta">
+      <h3>🔐 Вход через Telegram</h3>
+      <p>Войдите одним нажатием — без пароля. Подписка, ссылки для подключения
+         и реферальная программа сразу появятся в профиле.</p>
+      <a href="/login/telegram" class="btn">Войти через Telegram</a>
+      <a href="/login" class="btn secondary">Войти по email</a>
+    </div>
+        """ if BOT_USERNAME else ""
     apps_html = f"""
     <div class="card apps-card">
       <h3>📱 Приложения для подключения</h3>
@@ -350,6 +362,7 @@ async def handle_index(request: web.Request) -> web.Response:
     """
     eco_html = ""
     body = f"""
+    {login_cta}
     {trial_html}
     <div id="plans"></div>
     <h2>Тарифы</h2>
