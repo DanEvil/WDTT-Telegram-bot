@@ -519,7 +519,8 @@ async def test_webhook_e2e():
     async def on_succeeded(payment_id):
         got.append(payment_id)
 
-    app = webhook.make_webhook_app("/yookassa", on_succeeded)
+    # check_ip=False — локальный тест: IP-белый список ЮKassa здесь неприменим
+    app = webhook.make_webhook_app("/yookassa", on_succeeded, check_ip=False)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)

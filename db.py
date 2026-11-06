@@ -1,4 +1,5 @@
 """Хранение данных: SQLite через aiosqlite."""
+import secrets
 import time
 from contextlib import asynccontextmanager
 
@@ -29,8 +30,16 @@ async def init_db() -> None:
                 expires_at   INTEGER NOT NULL DEFAULT 0,
                 plan_id      TEXT,
                 server_id    INTEGER,
+                sub_id       TEXT,
+                auto_renew   INTEGER NOT NULL DEFAULT 0,   -- 1 = автоматически продлевать на 1 месяц
+                notify_hours INTEGER NOT NULL DEFAULT 0,   -- за сколько часов уведомлять о списании (0 = не уведомлять)
+                payment_method_id TEXT,                     -- сохранённый способ оплаты ЮKassa (карта)
+                renew_notified INTEGER NOT NULL DEFAULT 0,  -- уведомление о скором списании уже отправлено
+                renew_charge_exp INTEGER NOT NULL DEFAULT 0, -- expires_at, за который уже пытались списать
+                renew_charge_at INTEGER NOT NULL DEFAULT 0,  -- время последней попытки списания
+                renew_charge_payment_id TEXT,               -- платёж автопродления (если списание создано)
                 created_at   INTEGER NOT NULL
-            );
+                        );
 
             CREATE TABLE IF NOT EXISTS payments (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,16 +93,117 @@ async def init_db() -> None:
         cols = [r["name"] for r in (await (await db.execute("PRAGMA table_info(customers)")).fetchall())]
         if "server_id" not in cols:
             await db.execute("ALTER TABLE customers ADD COLUMN server_id INTEGER")
+        # Миграция: добавляем sub_id в существующую таблицу customers
+        if "sub_id" not in cols:
+            await db.execute("ALTER TABLE customers ADD COLUMN sub_id TEXT")
         # Миграция: битовая маска отправленных напоминаний (за 3/2/1 день)
         if "reminder_sent" not in cols:
             await db.execute("ALTER TABLE customers ADD COLUMN reminder_sent INTEGER NOT NULL DEFAULT 0")
         # Миграция: было ли отправлено предупреждение о трафике (<150 МБ)
         if "traffic_notified" not in cols:
             await db.execute("ALTER TABLE customers ADD COLUMN traffic_notified INTEGER NOT NULL DEFAULT 0")
+        # Миграция: реальный telegram_id для уведомлений (для сайт-аккаунтов, привязанных к TG)
+        if "notify_tg_id" not in cols:
+            await db.execute("ALTER TABLE customers ADD COLUMN notify_tg_id INTEGER")
+        # Миграция: автопродление подписки (на 1 месяц) + уведомление о списании + сохранённый способ оплаты
+        if "auto_renew" not in cols:
+            await db.execute("ALTER TABLE customers ADD COLUMN auto_renew INTEGER NOT NULL DEFAULT 0")
+        if "notify_hours" not in cols:
+            await db.execute("ALTER TABLE customers ADD COLUMN notify_hours INTEGER NOT NULL DEFAULT 0")
+        if "payment_method_id" not in cols:
+            await db.execute("ALTER TABLE customers ADD COLUMN payment_method_id TEXT")
+        if "renew_notified" not in cols:
+            await db.execute("ALTER TABLE customers ADD COLUMN renew_notified INTEGER NOT NULL DEFAULT 0")
+        # Миграция: защита от повторного списания при автопродлении
+        if "renew_charge_exp" not in cols:
+            await db.execute("ALTER TABLE customers ADD COLUMN renew_charge_exp INTEGER NOT NULL DEFAULT 0")
+        if "renew_charge_at" not in cols:
+            await db.execute("ALTER TABLE customers ADD COLUMN renew_charge_at INTEGER NOT NULL DEFAULT 0")
+        if "renew_charge_payment_id" not in cols:
+            await db.execute("ALTER TABLE customers ADD COLUMN renew_charge_payment_id TEXT")
 
+        # Миграции таблицы servers: SSH-доступ для автоустановки панели
+        scols = [r["name"] for r in (await (await db.execute("PRAGMA table_info(servers)")).fetchall())]
+        if "ssh_host" not in scols:
+            await db.execute("ALTER TABLE servers ADD COLUMN ssh_host TEXT")
+        if "ssh_port" not in scols:
+            await db.execute("ALTER TABLE servers ADD COLUMN ssh_port INTEGER")
+        if "ssh_user" not in scols:
+            await db.execute("ALTER TABLE servers ADD COLUMN ssh_user TEXT")
+        if "ssh_password" not in scols:
+            await db.execute("ALTER TABLE servers ADD COLUMN ssh_password TEXT")
 
-# ---------- payments ----------
+        # VK-аккаунты (cookies профилей VK для создания хешей) и учёт выданных хешей
+        await db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS vk_accounts (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                label       TEXT NOT NULL,
+                cookies     TEXT NOT NULL,          -- JSON-массив cookies или строка "k=v; ..."
+                active      INTEGER NOT NULL DEFAULT 1,
+                created_at  INTEGER NOT NULL
+            );
 
+            CREATE TABLE IF NOT EXISTS vk_issued (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_id     INTEGER NOT NULL,
+                vk_account_id INTEGER NOT NULL,
+                user_password TEXT NOT NULL,
+                vk_hash       TEXT NOT NULL,
+                created_at    INTEGER NOT NULL
+            );
+            """
+        )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_vk_issued_server ON vk_issued(server_id, vk_account_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_vk_issued_user ON vk_issued(user_password)")
+
+        # Индексы для быстрого поиска (sync_panel_worker, sub_id lookups)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_customers_wdtt_password ON customers(wdtt_password)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_customers_sub_id ON customers(sub_id)")
+
+        # Таблицы сайта (личный кабинет): аккаунты и коды привязки Telegram
+        await db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS site_users (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                email          TEXT NOT NULL UNIQUE,
+                username       TEXT,
+                password_hash  TEXT NOT NULL,
+                telegram_id    INTEGER UNIQUE,
+                referral_code  TEXT NOT NULL UNIQUE,
+                created_at     INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS bind_codes (
+                code         TEXT PRIMARY KEY,
+                site_user_id INTEGER NOT NULL,
+                created_at   INTEGER NOT NULL,
+                used         INTEGER NOT NULL DEFAULT 0
+            );
+            """
+        )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_site_users_telegram ON site_users(telegram_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_bind_codes_site ON bind_codes(site_user_id)")
+
+        # Таблица рефералов сайта (отдельная от тг-рефералов в таблице referrals)
+        await db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS site_referrals (
+                referred_site_user_id  INTEGER PRIMARY KEY,
+                referrer_site_user_id  INTEGER NOT NULL,
+                created_at             INTEGER NOT NULL,
+                rewarded               INTEGER NOT NULL DEFAULT 0,
+                rewarded_at            INTEGER
+            );
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_site_referrals_referrer ON site_referrals(referrer_site_user_id)"
+        )
+        
+        
+        # ---------- payments ----------
+        
 async def add_payment(telegram_id: int, username: str | None, payment_id: str,
                       plan_id: str, amount: str) -> None:
     async with conn() as db:
@@ -109,6 +219,17 @@ async def get_payment(payment_id: str) -> dict | None:
         cur = await db.execute("SELECT * FROM payments WHERE payment_id = ?", (payment_id,))
         row = await cur.fetchone()
         return dict(row) if row else None
+
+
+async def list_payments(telegram_id: int, limit: int = 20) -> list[dict]:
+    """Последние платежи пользователя (новые сверху)."""
+    async with conn() as db:
+        cur = await db.execute(
+            "SELECT * FROM payments WHERE telegram_id = ? ORDER BY created_at DESC LIMIT ?",
+            (telegram_id, limit),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
 
 async def set_payment_status(payment_id: str, status: str, paid_at: int | None = None) -> None:
@@ -150,22 +271,23 @@ async def get_customer(telegram_id: int) -> dict | None:
 
 async def upsert_customer(telegram_id: int, wdtt_password: str, expires_at: int,
                           plan_id: str | None, server_id: int | None = None,
-                          username: str | None = None) -> None:
+                          username: str | None = None, sub_id: str | None = None) -> None:
     async with conn() as db:
         await db.execute(
             """
-            INSERT INTO customers (telegram_id, username, wdtt_password, expires_at, plan_id, server_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO customers (telegram_id, username, wdtt_password, expires_at, plan_id, server_id, sub_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(telegram_id) DO UPDATE SET
                 username      = COALESCE(excluded.username, customers.username),
                 wdtt_password = excluded.wdtt_password,
                 expires_at    = excluded.expires_at,
                 plan_id       = excluded.plan_id,
                 server_id     = excluded.server_id,
+                sub_id        = COALESCE(excluded.sub_id, customers.sub_id),
                 reminder_sent = 0,
                 traffic_notified = 0
             """,
-            (telegram_id, username, wdtt_password, expires_at, plan_id, server_id, int(time.time())),
+            (telegram_id, username, wdtt_password, expires_at, plan_id, server_id, sub_id, int(time.time())),
         )
 
 
@@ -175,6 +297,94 @@ async def clear_customer(telegram_id: int) -> None:
             "UPDATE customers SET wdtt_password = NULL, expires_at = 0, plan_id = NULL, "
             "reminder_sent = 0, traffic_notified = 0 WHERE telegram_id = ?",
             (telegram_id,),
+        )
+
+
+# ---------- автопродление подписки ----------
+
+async def set_auto_renew(telegram_id: int, auto_renew: bool, notify_hours: int = 0) -> None:
+    """Включает/выключает автопродление и порог уведомления о списании (часы, 0 = не уведомлять)."""
+    async with conn() as db:
+        await db.execute(
+            "UPDATE customers SET auto_renew = ?, notify_hours = ? WHERE telegram_id = ?",
+            (1 if auto_renew else 0, max(0, int(notify_hours)), telegram_id),
+        )
+
+
+async def get_auto_renew_settings(telegram_id: int) -> dict:
+    async with conn() as db:
+        row = await (await db.execute(
+            "SELECT auto_renew, notify_hours, payment_method_id FROM customers WHERE telegram_id = ?",
+            (telegram_id,),
+        )).fetchone()
+    if not row:
+        return {"auto_renew": False, "notify_hours": 0, "has_payment_method": False}
+    return {
+        "auto_renew": bool(row["auto_renew"]),
+        "notify_hours": int(row["notify_hours"] or 0),
+        "has_payment_method": bool(row["payment_method_id"]),
+    }
+
+
+async def set_payment_method(telegram_id: int, payment_method_id: str | None) -> None:
+    async with conn() as db:
+        await db.execute(
+            "UPDATE customers SET payment_method_id = ? WHERE telegram_id = ?",
+            (payment_method_id, telegram_id),
+        )
+
+
+async def list_autorenew_customers() -> list[dict]:
+    """Активные клиенты с включённым автопродлением и сохранённым способом оплаты."""
+    async with conn() as db:
+        rows = await (await db.execute(
+            "SELECT * FROM customers WHERE auto_renew = 1 AND payment_method_id IS NOT NULL "
+            "AND wdtt_password IS NOT NULL AND expires_at > 0"
+        )).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def mark_renew_notified(telegram_id: int) -> None:
+    async with conn() as db:
+        await db.execute("UPDATE customers SET renew_notified = 1 WHERE telegram_id = ?", (telegram_id,))
+
+
+async def clear_renew_notified(telegram_id: int) -> None:
+    async with conn() as db:
+        await db.execute("UPDATE customers SET renew_notified = 0 WHERE telegram_id = ?", (telegram_id,))
+
+
+# ---------- защита от повторного списания (автопродление) ----------
+
+async def get_renew_charge(telegram_id: int) -> dict | None:
+    """Состояние последней попытки списания по автопродлению."""
+    async with conn() as db:
+        row = await (await db.execute(
+            "SELECT renew_charge_exp, renew_charge_at, renew_charge_payment_id "
+            "FROM customers WHERE telegram_id = ?", (telegram_id,)
+        )).fetchone()
+    return dict(row) if row else None
+
+
+async def mark_renew_charge(telegram_id: int, expires_at: int, payment_id: str | None = None) -> None:
+    """Фиксирует попытку списания за конкретный срок подписки.
+
+    payment_id=None — попытка без созданного платежа (ошибка сети/карты).
+    """
+    async with conn() as db:
+        await db.execute(
+            "UPDATE customers SET renew_charge_exp = ?, renew_charge_at = ?, "
+            "renew_charge_payment_id = COALESCE(?, renew_charge_payment_id) WHERE telegram_id = ?",
+            (int(expires_at), int(time.time()), payment_id, telegram_id),
+        )
+
+
+async def clear_renew_charge(telegram_id: int) -> None:
+    """Сбрасывает метку списания (например, после успешного продления)."""
+    async with conn() as db:
+        await db.execute(
+            "UPDATE customers SET renew_charge_exp = 0, renew_charge_at = 0, "
+            "renew_charge_payment_id = NULL WHERE telegram_id = ?", (telegram_id,)
         )
 
 
@@ -230,6 +440,33 @@ async def get_all_customers() -> list[dict]:
         cur = await db.execute("SELECT * FROM customers ORDER BY created_at DESC")
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+
+async def get_customer_by_password(wdtt_password: str) -> dict | None:
+    """Быстрый поиск клиента по паролю панели (использует индекс idx_customers_wdtt_password)."""
+    async with conn() as db:
+        cur = await db.execute("SELECT * FROM customers WHERE wdtt_password = ?", (wdtt_password,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def get_customers_without_sub_id() -> list[dict]:
+    """Активные клиенты без sub_id (для миграции Subscription Proxy)."""
+    async with conn() as db:
+        cur = await db.execute(
+            "SELECT * FROM customers WHERE wdtt_password IS NOT NULL "
+            "AND (sub_id IS NULL OR sub_id = '')"
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def set_customer_sub_id(telegram_id: int, sub_id: str) -> None:
+    async with conn() as db:
+        await db.execute(
+            "UPDATE customers SET sub_id = ? WHERE telegram_id = ?",
+            (sub_id, telegram_id),
+        )
 
 
 # ---------- trial ----------
@@ -324,17 +561,73 @@ async def get_total_referrals() -> int:
         return int(row["c"]) if row else 0
 
 
+async def get_site_user_by_email(email: str) -> dict | None:
+    async with conn() as db:
+        cur = await db.execute("SELECT * FROM site_users WHERE email = ?", (email,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+# ---------- сайт-рефералы (отдельно от тг-рефералов) ----------
+
+def generate_referral_code(length: int = 8) -> str:
+    return secrets.token_urlsafe(length)[:length]
+
+
+async def add_site_referral(referred_site_user_id: int, referrer_site_user_id: int) -> None:
+    async with conn() as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO site_referrals "
+            "(referred_site_user_id, referrer_site_user_id, created_at, rewarded) "
+            "VALUES (?, ?, ?, 0)",
+            (referred_site_user_id, referrer_site_user_id, int(time.time())),
+        )
+
+
+async def get_site_referrals_count(site_user_id: int) -> int:
+    async with conn() as db:
+        cur = await db.execute(
+            "SELECT COUNT(*) c FROM site_referrals WHERE referrer_site_user_id = ?",
+            (site_user_id,),
+        )
+        row = await cur.fetchone()
+        return int(row["c"]) if row else 0
+
+
+async def get_site_user_by_referral_code(referral_code: str) -> dict | None:
+    async with conn() as db:
+        cur = await db.execute(
+            "SELECT * FROM site_users WHERE referral_code = ?", (referral_code,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def bind_site_telegram(site_user_id: int, telegram_id: int) -> bool:
+    """Привязывает site_user к telegram_id (ещё не привязанному)."""
+    async with conn() as db:
+        cur = await db.execute(
+            "UPDATE site_users SET telegram_id = ? WHERE id = ? AND telegram_id IS NULL",
+            (telegram_id, site_user_id),
+        )
+        return cur.rowcount > 0
+
+
 # ---------- servers ----------
 
 async def add_server(name: str, base_url: str, username: str, password: str,
-                     verify_ssl: bool = False) -> int:
+                     verify_ssl: bool = False,
+                     ssh_host: str | None = None, ssh_port: int | None = None,
+                     ssh_user: str | None = None, ssh_password: str | None = None) -> int:
     async with conn() as db:
         cur = await db.execute(
-            "INSERT INTO servers (name, base_url, username, password, verify_ssl, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (name, base_url, username, password, 1 if verify_ssl else 0, int(time.time())),
+            "INSERT INTO servers (name, base_url, username, password, verify_ssl, created_at,"
+            " ssh_host, ssh_port, ssh_user, ssh_password) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, base_url, username, password, 1 if verify_ssl else 0, int(time.time()),
+             ssh_host, ssh_port, ssh_user, ssh_password),
         )
-        return cur.lastrowid
+        return int(cur.lastrowid or 0)
 
 
 async def list_servers() -> list[dict]:
@@ -376,6 +669,92 @@ async def backfill_customer_servers(server_id: int) -> None:
             "WHERE server_id IS NULL AND wdtt_password IS NOT NULL",
             (server_id,),
         )
+
+
+# ---------- VK-аккаунты и учёт выданных хешей ----------
+
+async def add_vk_account(label: str, cookies: str) -> int:
+    async with conn() as db:
+        cur = await db.execute(
+            "INSERT INTO vk_accounts (label, cookies, active, created_at) VALUES (?, ?, 1, ?)",
+            (label, cookies, int(time.time())),
+        )
+        return int(cur.lastrowid or 0)
+
+
+async def list_vk_accounts(active_only: bool = True) -> list[dict]:
+    async with conn() as db:
+        q = "SELECT * FROM vk_accounts"
+        if active_only:
+            q += " WHERE active = 1"
+        q += " ORDER BY id"
+        rows = await (await db.execute(q)).fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_vk_account(account_id: int) -> dict | None:
+    async with conn() as db:
+        row = await (await db.execute("SELECT * FROM vk_accounts WHERE id = ?", (account_id,))).fetchone()
+        return dict(row) if row else None
+
+
+async def delete_vk_account(account_id: int) -> None:
+    async with conn() as db:
+        await db.execute("UPDATE vk_accounts SET active = 0 WHERE id = ?", (account_id,))
+
+
+async def record_vk_issued(server_id: int, vk_account_id: int, user_password: str, vk_hash: str) -> None:
+    async with conn() as db:
+        await db.execute(
+            "INSERT INTO vk_issued (server_id, vk_account_id, user_password, vk_hash, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (server_id, vk_account_id, user_password, vk_hash, int(time.time())),
+        )
+
+
+async def vk_issued_counts(server_id: int | None = None) -> dict[int, int]:
+    """Сколько хешей выдано каждым VK-аккаунтом (по серверу или всего)."""
+    async with conn() as db:
+        if server_id is None:
+            rows = await (await db.execute(
+                "SELECT vk_account_id, COUNT(*) c FROM vk_issued GROUP BY vk_account_id"
+            )).fetchall()
+        else:
+            rows = await (await db.execute(
+                "SELECT vk_account_id, COUNT(*) c FROM vk_issued WHERE server_id = ? GROUP BY vk_account_id",
+                (server_id,),
+            )).fetchall()
+        return {int(r["vk_account_id"]): int(r["c"]) for r in rows}
+
+
+async def vk_hashes_for_user(user_password: str) -> list[str]:
+    async with conn() as db:
+        rows = await (await db.execute(
+            "SELECT vk_hash FROM vk_issued WHERE user_password = ? ORDER BY id", (user_password,)
+        )).fetchall()
+        return [r["vk_hash"] for r in rows]
+
+
+# ---------- коды привязки сайта ----------
+
+async def get_bind_code(code: str) -> dict | None:
+    """Запись bind_codes по коду (для deep-link t.me/<bot>?start=bind_<code>)."""
+    async with conn() as db:
+        row = await (await db.execute(
+            "SELECT * FROM bind_codes WHERE code = ? AND used = 0", (code,)
+        )).fetchone()
+        return dict(row) if row else None
+
+
+async def mark_bind_code_used(code: str) -> None:
+    async with conn() as db:
+        await db.execute("UPDATE bind_codes SET used = 1 WHERE code = ?", (code,))
+
+
+async def get_site_user_by_id(site_user_id: int) -> dict | None:
+    async with conn() as db:
+        row = await (await db.execute("SELECT * FROM site_users WHERE id = ?", (site_user_id,))).fetchone()
+        return dict(row) if row else None
 
 
 # ---------- plans ----------

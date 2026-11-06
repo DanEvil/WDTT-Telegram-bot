@@ -120,8 +120,22 @@ docker compose up -d --build
 | `REFERRAL_REWARD_*` | дневная/трафик/устройства награды рефереру |
 | `WEBHOOK_ENABLED` | `true` — принимать webhook ЮKassa |
 | `WEBHOOK_HOST` / `WEBHOOK_PORT` / `WEBHOOK_PATH` | HTTP-сервер для webhook (`/yookassa`) |
+| `WEBHOOK_SKIP_IP_CHECK` | `true` — отключить IP-whitelist ЮKassa (только локальная разработка!) |
+| `HEALTH_PORT` | порт healthcheck/метрик (по умолчанию `8081`) |
 | `POLL_INTERVAL` | интервал опроса платежей в секундах (пока webhook выключен) |
 | `DB_PATH` | путь к SQLite (в Docker — `/app/data/bot.db`) |
+| `LOG_FILE` | путь к файлу логов (пусто = только stdout); ротация `LOG_MAX_BYTES`/`LOG_BACKUP_COUNT` |
+| `METRICS_ENABLED` | `true` — эндпоинт `/metrics` в формате Prometheus на `HEALTH_PORT` |
+| `PANEL_CHECK_INTERVAL` | интервал проверки доступности панелей, сек (60) |
+| `PANEL_FAIL_ALERT_THRESHOLD` | сколько неудач подряд → алерт админам (3) |
+| `SUB_DOMAIN` / `SUB_PATH` | единый домен подписки (Subscription Proxy через nginx+Lua+Redis) |
+| `REDIS_URL` / `REDIS_SUB_TTL` | Redis для маппинга sub_id → панель |
+| `USE_REDIS_STORAGE` | `true` — FSM в Redis (multi-instance), иначе MemoryStorage |
+| `WEBAPP_ENABLED` | `true` — включить Telegram Mini App |
+| `WEBAPP_HOST` / `WEBAPP_PORT` | HTTP-сервер Mini App (по умолчанию `0.0.0.0:8082`) |
+| `MINIAPP_URL` | публичный HTTPS-URL приложения (напр. `https://app.yourdomain.com`) — без него бот покажет обычное меню |
+| `STARS_ENABLED` | `true` — принимать оплату Telegram Stars |
+| `STARS_RATE` | звёзд за 1 рубль (по умолчанию `1.0`, т.е. 100 ₽ = 100 ⭐) |
 
 Тарифы по умолчанию (100 ₽ / 30 дн, 300 ₽ / 90 дн, 600 ₽ / 180 дн, 1200 ₽ / 365 дн; трафик безлимит, до 3 устройств) задаются в `plans.py` и редактируются из админки.
 
@@ -141,15 +155,37 @@ docker compose up -d --build
 3. Внутренний адрес панели не меняйте без необходимости; при изменении обновите `WDTT_BASE_URL`.
 4. Самоподписанный сертификат → `WDTT_VERIFY_SSL=false`.
 
+## Telegram Mini App (веб-приложение внутри Telegram)
+
+Вместо чата с кнопками пользователи открывают полноценное приложение (тёмная тема Telegram).
+
+1. **BotFather** → `/mybots` → ваш бот → **Menu Button** → **Configure menu button** → выберите **Web App** и укажите `MINIAPP_URL` (или оставьте кнопку в `/start` — бот отправит «🚀 Открыть приложение»).
+2. В `.env`:
+   ```env
+   WEBAPP_ENABLED=true
+   WEBAPP_PORT=8082
+   MINIAPP_URL=https://app.yourdomain.com
+   STARS_ENABLED=true
+   STARS_RATE=1.0
+   ```
+3. **nginx/caddy** проксирует `https://app.yourdomain.com` → `127.0.0.1:8082` (HTTPS обязателен, Telegram не открывает http).
+4. Оплата: ЮKassa (как раньше, через редирект) **и** Telegram Stars (`create_invoice_link`, `currency=XTR`). Бот обрабатывает `pre_checkout_query` и `successful_payment` и выдаёт доступ.
+5. Auth в приложении — валидация `initData` (HMAC-SHA256 по токену бота), сессия 7 дней.
+
+API для фронтенда: `POST /api/auth`, `GET /api/me`, `GET /api/plans`, `POST /api/trial`, `POST /api/pay/yookassa`, `POST /api/pay/stars`, `GET /api/referrals`, `POST /api/check_payment`.
+
 ## Структура проекта
 
 ```
-bot.py                  # Telegram-логика: меню, FSM, инструкция, выдача доступа
+bot.py                  # Telegram-логика: меню, FSM, инструкция, выдача доступа, фоновые воркеры
 config.py               # конфигурация из .env
 db.py                   # SQLite: customers, payments, trials, referrals, servers, plans
 wdtt.py                 # REST API панели WDTT; ссылки wdtt://, vk_hash
-payments.py             # создание/опрос платежей ЮKassa (v3)
-webhook.py              # HTTP-приём webhook ЮKassa
+payments.py             # создание/опрос платежей ЮKassa (v3), пул HTTP-клиентов
+webhook.py              # HTTP-приём webhook ЮKassa (IP-whitelist, rate-limit, дедупликация)
+webapp.py               # Telegram Mini App: REST API (/api/*) + раздача статики
+static/                 # фронтенд Mini App (index.html, app.js, style.css)
+metrics.py              # метрики Prometheus (счётчики, gauge, гистограммы)
 plans.py                # тарифы (дефолт или PLANS_JSON)
 smoke_test.py           # smoke-тесты без доступа к реальным API
 deploy.sh               # установка на VPS: зависимости + мастер + docker + systemd

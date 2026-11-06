@@ -178,6 +178,75 @@ class WdttClient:
         obj = await self._call("GET", "/panel/api/inbound")
         return obj if isinstance(obj, dict) else {}
 
+    async def save_inbound(self, **fields) -> dict:
+        """Сохраняет inbound (POST /panel/api/inbound/save) и перезапускает WDTT.
+
+        Панель пересобирает конфиг из тела запроса, поэтому переданные поля
+        должны быть полными: удобно сначала прочитать get_inbound() и
+        overrride-ить нужные ключи.
+        """
+        obj = await self._call("POST", "/panel/api/inbound/save", json=fields)
+        return obj if isinstance(obj, dict) else {}
+
+    async def set_max_users(self, max_users: int) -> dict:
+        """Удобный хелпер: меняет только лимит пользователей (max_users)."""
+        cur = await self.get_inbound()
+        payload = {
+            "tag": cur.get("tag") or "wdtt-in",
+            "remark": cur.get("remark") or "WDTT",
+            "listen_host": cur.get("listen_host") or "0.0.0.0",
+            "server_host": cur.get("server_host") or "",
+            "dtls_port": int(cur.get("dtls_port") or 56000),
+            "wg_port": int(cur.get("wg_port") or 56001),
+            "client_port": int(cur.get("client_port") or 9000),
+            "dns": cur.get("dns") or "1.1.1.1",
+            "max_users": int(max_users),
+        }
+        return await self.save_inbound(**payload)
+
+    # ---------- VK Creator (cookies / хеши) ----------
+
+    async def set_vk_cookies(self, cookies: str) -> dict:
+        """Загружает cookies VK-профиля в панель (POST /panel/api/vk/cookies).
+
+        cookies — JSON-массив [{name,value}...] (cookies-vk.json) или строка
+        вида "remixsid=...; ...". В панели хранится один активный профиль —
+        бот ротирует профили, загружая нужный перед созданием вызова.
+        """
+        obj = await self._call("POST", "/panel/api/vk/cookies", json={"cookies_json": cookies})
+        return obj if isinstance(obj, dict) else {}
+
+    async def vk_status(self) -> dict:
+        """GET /panel/api/vk/status: cookies_ok, cookies_present, sessions (активные звонки)."""
+        obj = await self._call("GET", "/panel/api/vk/status")
+        return obj if isinstance(obj, dict) else {}
+
+    async def vk_calls(self) -> list[dict]:
+        """Активные VK-звонки панели (сессии) из vk/status."""
+        st = await self.vk_status()
+        sessions = st.get("sessions")
+        return sessions if isinstance(sessions, list) else []
+
+    # ---------- настройки панели ----------
+
+    async def set_panel_credentials(self, new_password: str, new_username: str | None = None) -> None:
+        """Меняет логин/пароль панели (POST /panel/setting/updateUser, 3x-ui совместимый).
+
+        После смены пароля текущая сессия протухает — клиент перелогинится
+        с новыми данными при следующем _call (нужно обновить self.password).
+        """
+        payload = {
+            "oldUsername": self.username,
+            "oldPassword": self.password,
+            "newUsername": new_username or self.username,
+            "newPassword": new_password,
+        }
+        await self._call("POST", "/panel/setting/updateUser", json=payload)
+        self.password = new_password
+        if new_username:
+            self.username = new_username
+        self._logged_in = False  # сессия с новым паролем не валидна
+
     async def get_user_info(self, password: str) -> dict | None:
         """Запись пользователя из списка панели (total_gb, max_devices и т.д.)."""
         for u in (await self.get_users()).get("users") or []:

@@ -11,6 +11,7 @@
 сохраняются (иначе задача может быть собрана GC).
 """
 import asyncio
+import ipaddress
 import logging
 import re
 import time
@@ -27,12 +28,35 @@ OnSucceeded = Callable[[str], Awaitable[None]]
 # id платежа ЮKassa: uuid-подобная строка из hex и дефисов
 _PAYMENT_ID_RE = re.compile(r"^[0-9a-f][0-9a-f-]{15,63}$", re.IGNORECASE)
 
+# Официальные IP-диапазоны ЮKassa для webhook-уведомлений
+# (https://yookassa.ru/developers/using-api/webhooks#ip)
+YOOKASSA_IP_NETWORKS = [
+    ipaddress.ip_network(n) for n in (
+        "185.71.76.0/27",
+        "185.71.77.0/27",
+        "77.75.153.0/25",
+        "77.75.156.11/32",
+        "77.75.156.35/32",
+        "77.75.154.128/25",
+        "2a02:5180::/32",
+    )
+]
+
+
+def is_yookassa_ip(ip: str) -> bool:
+    """Проверяет, что IP входит в официальные диапазоны ЮKassa."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr in net for net in YOOKASSA_IP_NETWORKS)
+
 # грубый рейт-лимит на один IP
 _RATE_WINDOW = 60.0
 _RATE_MAX = 30
 
 
-def make_webhook_app(path: str, on_succeeded: OnSucceeded) -> web.Application:
+def make_webhook_app(path: str, on_succeeded: OnSucceeded, check_ip: bool = True) -> web.Application:
     tasks: set[asyncio.Task] = set()      # текущие задачи (не дают их собрать GC)
     seen: deque[str] = deque(maxlen=256)  # недавно принятые платёжи (дедупликация)
     hits_by_ip: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=_RATE_MAX))
@@ -45,6 +69,12 @@ def make_webhook_app(path: str, on_succeeded: OnSucceeded) -> web.Application:
 
     async def handler(request: web.Request) -> web.Response:
         peer = request.remote or "?"
+
+        # IP-whitelist ЮKassa (отключается только для локальной разработки)
+        if check_ip and not is_yookassa_ip(peer):
+            log.warning("webhook: отклонён запрос с не-ЮKassa IP %s", peer)
+            return web.Response(status=403, text="forbidden")
+
         now = time.monotonic()
         hits = hits_by_ip[peer]
         while hits and now - hits[0] > _RATE_WINDOW:
@@ -73,6 +103,11 @@ def make_webhook_app(path: str, on_succeeded: OnSucceeded) -> web.Application:
             return web.Response(text="ok")  # дубль уже в обработке
 
         seen.append(payment_id)
+        try:
+            import metrics as m
+            m.inc_counter(m.WEBHOOK_RECEIVED)
+        except ImportError:
+            pass
         task = asyncio.create_task(run(payment_id))
         tasks.add(task)
         task.add_done_callback(tasks.discard)
