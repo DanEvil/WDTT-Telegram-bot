@@ -276,7 +276,6 @@ def _page(title: str, body: str, session: dict | None = None, active: str = "") 
 <h1 class="page-title">{html.escape(title)}</h1>
 {body}
 </main>
-<footer class="footer">{html.escape(BRAND)} — стабильный доступ без VPN. Управление подпиской и поддержка: <a href="{_bot_link() or '#'}">бот в Telegram</a>{' · ' + f'<a href="{_bot_link()}">t.me/{html.escape(BOT_USERNAME)}</a>' if BOT_USERNAME else ''}.</footer>
 <script src="/static/site.js"></script>
 </body>
 </html>"""
