@@ -48,6 +48,7 @@ from db import (
     generate_referral_code, add_site_referral, get_site_referrals_count,
     get_site_user_by_referral_code,
     get_auto_renew_settings, set_auto_renew,
+    create_login_request, confirm_login_request, get_login_request, mark_login_request_used,
 )
 from payments import create_payment, fetch_payment
 from plans import PLANS, TRIAL, ALL_PLANS_BY_ID
@@ -350,7 +351,7 @@ async def handle_index(request: web.Request) -> web.Response:
 
 # ---------- регистрация / вход на сайт ----------
 
-_REGISTER_FORM = """
+_REGISTER_FORM_TG = """
 <div class="card" style="max-width:400px;margin:2rem auto">
   <h3>Регистрация</h3>
   <form method="post" action="/register">
@@ -365,13 +366,32 @@ _REGISTER_FORM = """
     </label>
     <button class="btn" type="submit" style="width:100%">Создать аккаунт</button>
   </form>
+  {tg_block}
   <p style="text-align:center;margin-top:1rem;color:var(--muted);font-size:.9rem">
     Уже есть аккаунт? <a href="/login">Войти</a>
   </p>
 </div>
 """
 
-_LOGIN_FORM = """
+def _tg_login_block(request) -> str:
+    """Кнопка входа через Telegram: открывает бота с одноразовым кодом.
+
+    Login Widget требует привязки домена к боту в @BotFather, поэтому рабочий
+    путь — deep-link в бота, где пользователь подтверждает вход.
+    """
+    if not BOT_USERNAME:
+        return ""
+    return """
+  <div class="tg-auth">
+    <div class="sep"><span>или войти через Telegram</span></div>
+    <p style="text-align:center;margin:0">
+      <a class="btn secondary" href="/login/telegram">🔐 Войти через Telegram</a>
+    </p>
+  </div>"""
+
+
+def _login_form(request) -> str:
+    return f"""
 <div class="card" style="max-width:400px;margin:2rem auto">
   <h3>Вход</h3>
   <form method="post" action="/login">
@@ -383,6 +403,7 @@ _LOGIN_FORM = """
     </label>
     <button class="btn" type="submit" style="width:100%">Войти</button>
   </form>
+  {_tg_login_block(request)}
   <p style="text-align:center;margin-top:1rem;color:var(--muted);font-size:.9rem">
     Нет аккаунта? <a href="/register">Зарегистрироваться</a>
   </p>
@@ -408,7 +429,7 @@ async def handle_register_get(request: web.Request) -> web.Response:
     session = _get_session(request)
     if session:
         raise web.HTTPFound("/profile")
-    return web.Response(text=_page("Регистрация", _REGISTER_FORM, session), content_type="text/html")
+    return web.Response(text=_page("Регистрация", _REGISTER_FORM_TG.replace("{tg_block}", _tg_login_block(request)), session), content_type="text/html")
 
 async def handle_register_post(request: web.Request) -> web.Response:
     data = await request.post()
@@ -447,7 +468,7 @@ async def handle_login_get(request: web.Request) -> web.Response:
     session = _get_session(request)
     if session:
         raise web.HTTPFound("/profile")
-    return web.Response(text=_page("Вход", _LOGIN_FORM, session), content_type="text/html")
+    return web.Response(text=_page("Вход", _login_form(request), session), content_type="text/html")
 
 async def handle_login_post(request: web.Request) -> web.Response:
     data = await request.post()
@@ -483,6 +504,64 @@ async def handle_bind_telegram(request: web.Request) -> web.Response:
     deep_link = _bot_link(f"bind_{code}")
     body = _BIND_FORM.format(code=code, deep_link=deep_link)
     return web.Response(text=_page("Привязка Telegram", body, session), content_type="text/html")
+
+async def handle_login_telegram(request: web.Request) -> web.Response:
+    """Начало входа через Telegram: создаём код и отправляем пользователя в бота."""
+    if not BOT_USERNAME:
+        raise web.HTTPNotFound()
+    await init_db()
+    code = secrets.token_urlsafe(24)
+    await create_login_request(code)
+    raise web.HTTPFound(f"https://t.me/{BOT_USERNAME}?start=web_login_{code}")
+
+
+async def handle_login_confirm(request: web.Request) -> web.Response:
+    """Подтверждение входа: бот записал telegram_id — выдаём сессию сайта."""
+    code = (request.query.get("code") or "").strip()
+    await init_db()
+    row = await get_login_request(code)
+    if not row or not row.get("telegram_id") or row.get("used"):
+        return web.Response(
+            text=_page("Ошибка", "<p class='err'>Ссылка входа недействительна или уже использована.</p>"
+                              "<p><a href='/login'>Войти заново</a></p>"),
+            status=400,
+        )
+    telegram_id = int(row["telegram_id"])
+    username = row.get("username") or None
+
+    async with db_conn() as db:
+        cur = await db.execute("SELECT * FROM site_users WHERE telegram_id = ?", (telegram_id,))
+        site_user = await cur.fetchone()
+        if site_user:
+            site_user_id = site_user["id"]
+            user_name = site_user["username"]
+        else:
+            referral_code = generate_referral_code()
+            cur = await db.execute(
+                "INSERT INTO site_users (email, username, password_hash, telegram_id, referral_code, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (f"tg_{telegram_id}@wdtt.local", username or str(telegram_id), "",
+                 telegram_id, referral_code, int(time.time())),
+            )
+            site_user_id = cur.lastrowid
+            user_name = username or str(telegram_id)
+        await db.execute(
+            "INSERT INTO customers (telegram_id, username, expires_at, plan_id, server_id, created_at) "
+            "VALUES (?, ?, 0, NULL, NULL, ?) "
+            "ON CONFLICT(telegram_id) DO UPDATE SET username=COALESCE(excluded.username, customers.username)",
+            (telegram_id, username or "", int(time.time())),
+        )
+
+    await mark_login_request_used(code)
+    response = web.HTTPFound("/profile")
+    set_site_session(response, {
+        "id": site_user_id,
+        "email": None,
+        "username": user_name,
+        "telegram_id": telegram_id,
+    })
+    return response
+
 
 async def handle_auth_telegram(request: web.Request) -> web.Response:
     """Приём данных от Telegram Login Widget."""
@@ -1152,6 +1231,8 @@ def make_app() -> web.Application:
     app.router.add_post("/register", handle_register_post)
     app.router.add_get("/login", handle_login_get)
     app.router.add_post("/login", handle_login_post)
+    app.router.add_get("/login/telegram", handle_login_telegram)
+    app.router.add_get("/auth/telegram/confirm", handle_login_confirm)
     app.router.add_get("/auth/telegram", handle_auth_telegram)
     app.router.add_get("/bind-telegram", handle_bind_telegram)
     app.router.add_get("/r/{code}", handle_referral_link)

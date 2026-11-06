@@ -182,6 +182,18 @@ async def init_db() -> None:
             );
             """
         )
+        # Запросы на вход на сайт через Telegram (deep-link t.me/<bot>?start=web_login_<code>)
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS login_requests (
+                code       TEXT PRIMARY KEY,
+                telegram_id INTEGER,
+                username   TEXT,
+                created_at INTEGER NOT NULL,
+                used       INTEGER NOT NULL DEFAULT 0
+            );
+            """
+        )
         await db.execute("CREATE INDEX IF NOT EXISTS idx_site_users_telegram ON site_users(telegram_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_bind_codes_site ON bind_codes(site_user_id)")
 
@@ -755,6 +767,42 @@ async def get_site_user_by_id(site_user_id: int) -> dict | None:
     async with conn() as db:
         row = await (await db.execute("SELECT * FROM site_users WHERE id = ?", (site_user_id,))).fetchone()
         return dict(row) if row else None
+
+
+# ---------- вход на сайт через Telegram ----------
+
+async def create_login_request(code: str) -> None:
+    """Создаёт запрос на вход (код подтверждает бот)."""
+    async with conn() as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO login_requests (code, telegram_id, created_at, used) "
+            "VALUES (?, NULL, ?, 0)",
+            (code, int(time.time())),
+        )
+
+
+async def confirm_login_request(code: str, telegram_id: int, username: str | None = None) -> bool:
+    """Бот подтверждает вход: записывает telegram_id (только один раз)."""
+    async with conn() as db:
+        cur = await db.execute(
+            "UPDATE login_requests SET telegram_id = ?, username = COALESCE(?, username) "
+            "WHERE code = ? AND telegram_id IS NULL AND used = 0",
+            (telegram_id, username, code),
+        )
+        return cur.rowcount > 0
+
+
+async def get_login_request(code: str) -> dict | None:
+    async with conn() as db:
+        row = await (await db.execute(
+            "SELECT * FROM login_requests WHERE code = ?", (code,)
+        )).fetchone()
+        return dict(row) if row else None
+
+
+async def mark_login_request_used(code: str) -> None:
+    async with conn() as db:
+        await db.execute("UPDATE login_requests SET used = 1 WHERE code = ?", (code,))
 
 
 # ---------- plans ----------

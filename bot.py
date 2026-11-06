@@ -72,6 +72,7 @@ from db import (
     list_servers,
     list_vk_accounts,
     mark_bind_code_used,
+    confirm_login_request,
     record_vk_issued,
     claim_trial,
     mark_referral_rewarded,
@@ -900,6 +901,10 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         elif args[1].startswith("bind_"):
             code = args[1][5:]
             await _bind_site_code(message, code)
+        elif args[1].startswith("web_login_"):
+            code = args[1][10:]
+            await _web_login_confirm(message, code)
+            return
     await state.clear()  # сбрасываем любой незавершённый FSM-диалог
 
     # Если настроен Mini App — отправляем кнопку открытия приложения
@@ -998,6 +1003,45 @@ async def _bind_site_code(message: Message, code: str) -> None:
         f"(<b>{html.escape(site_user.get('email') or '')}</b>).\n"
         "Теперь вы видите подписку и на сайте, и в боте — покупка и пробный период "
         "работают в обоих местах."
+    )
+
+
+async def _web_login_confirm(message: Message, code: str) -> None:
+    """Вход на сайт через Telegram: пользователь нажал кнопку на сайте.
+
+    Сайт создал код (login_requests), бот подтверждает его своим telegram_id
+    и выдаёт кнопку «Войти на сайт» с одноразовой ссылкой.
+    """
+    code = (code or "").strip()
+    if not message.from_user:
+        return
+    await init_db()
+    ok = await confirm_login_request(
+        code,
+        message.from_user.id,
+        message.from_user.username or message.from_user.first_name or "",
+    )
+    if not ok:
+        await message.answer(
+            "❌ Ссылка входа недействительна или уже использована.\n"
+            "Откройте сайт заново и нажмите «Войти через Telegram»."
+        )
+        return
+    site = (config.SITE_URL or "").rstrip("/")
+    if not site:
+        await message.answer(
+            "⚠️ Вход на сайт временно недоступен: не задан SITE_URL на сервере."
+        )
+        return
+    await message.answer(
+        "✅ Вход подтверждён. Нажмите кнопку ниже, чтобы войти на сайт "
+        f"(<b>{html.escape(site)}</b>).",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text="🔐 Войти на сайт",
+                url=f"{site}/auth/telegram/confirm?code={code}",
+            ),
+        ]]),
     )
 
 

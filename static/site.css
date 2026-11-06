@@ -143,6 +143,17 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
   .tg-btn { padding: .55rem .6rem; }
 }
 
+/* ===== вход через Telegram ===== */
+.tg-auth { margin-top: 1.1rem; text-align: center; }
+.tg-auth .sep {
+  display: flex; align-items: center; gap: .6rem;
+  color: var(--muted); font-size: .82rem; margin-bottom: .8rem;
+}
+.tg-auth .sep::before, .tg-auth .sep::after {
+  content: ""; flex: 1 1 auto; height: 1px; background: var(--border);
+}
+.tg-auth iframe { max-width: 100%; }
+
 /* ===== преимущества ===== */
 .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: .9rem; margin: 1rem 0; }
 .feature {
