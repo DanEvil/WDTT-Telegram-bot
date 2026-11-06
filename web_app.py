@@ -229,7 +229,14 @@ def _page(title: str, body: str, session: dict | None = None, active: str = "") 
             f"| <a href='/logout'>Выход</a></div>"
         )
     else:
-        auth = "<div class='user'><a href='/login'>Войти</a> | <a href='/register'>Регистрация</a></div>"
+        tg_login = (
+            "<a class='tg-login-link' href='/login/telegram'>🔐 Войти через Telegram</a> | "
+            if BOT_USERNAME else ""
+        )
+        auth = (
+            f"<div class='user'>{tg_login}"
+            "<a href='/login'>Войти</a> | <a href='/register'>Регистрация</a></div>"
+        )
 
     nav = ""
     if session and session.get("telegram_id") and _is_admin(session["telegram_id"]):
