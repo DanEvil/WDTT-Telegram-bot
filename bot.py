@@ -911,7 +911,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
             ),
         ]])
         await message.answer(
-            "👋 Привет! Это <b>WDTT</b> — VPN-панель.\n\n"
+            "👋 Привет! Это <b>K.O. Gateway</b>.\n\n"
             "Нажмите кнопку ниже, чтобы открыть приложение: покупка подписки, "
             "пробный период, ссылки для подключения и реферальная программа.",
             reply_markup=kb,

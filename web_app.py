@@ -76,6 +76,28 @@ def _brand_html() -> str:
     return html.escape(BRAND)
 
 
+def _links_html(links: dict) -> str:
+    """Ссылки подключения — так же, как в мини-приложении (по одной на платформу)."""
+    labels = (
+        ("unified", "🔗 Единая ссылка подписки"),
+        ("ios", "🍏 iOS"),
+        ("android", "🤖 Android"),
+        ("universal", "🔗 Универсальная ссылка"),
+    )
+    rows = []
+    for key, label in labels:
+        url = (links or {}).get(key)
+        if not url:
+            continue
+        rows.append(
+            f'<h4>{html.escape(label)}</h4>'
+            f'<div class="mono"><code>{html.escape(str(url))}</code></div>'
+        )
+    if not rows:
+        return '<p style="color:var(--muted);font-size:.85rem">Ссылка временно недоступна.</p>'
+    return "".join(rows)
+
+
 def _site_return_url() -> str:
     """URL возврата с сайта после оплаты.
 
@@ -203,7 +225,7 @@ def _page(title: str, body: str, session: dict | None = None, active: str = "") 
         who = session.get("username") or session.get("email") or "Профиль"
         auth = (
             f"<div class='user'>Вход как <b>{html.escape(str(who))}</b> "
-            f"| <a href='/profile'>Профиль</a> | <a href='/logout'>Выход</a></div>"
+            f"| <a href='/logout'>Выход</a></div>"
         )
     else:
         auth = "<div class='user'><a href='/login'>Войти</a> | <a href='/register'>Регистрация</a></div>"
@@ -219,6 +241,7 @@ def _page(title: str, body: str, session: dict | None = None, active: str = "") 
     nav_html = (
         navlink("/", "Главная")
         + navlink("/instruction", "Инструкция")
+        + navlink("/profile", "Профиль")
         + nav
     )
     tg_btn = (
@@ -239,7 +262,7 @@ def _page(title: str, body: str, session: dict | None = None, active: str = "") 
 <meta property="og:type" content="website">
 <link rel="icon" href="{_FAVICON}">
 <link rel="stylesheet" href="/static/site.css">
-<title>{html.escape(title)} — {html.escape(BRAND)}</title>
+<title>K.O.Gateway</title>
 </head>
 <body>
 <a class="skip-link" href="#main">Перейти к содержимому</a>
@@ -322,7 +345,6 @@ async def handle_index(request: web.Request) -> web.Response:
     <h2>Тарифы</h2>
     {plans_html or "<p>Тарифы не настроены.</p>"}
     {apps_html}
-    <p style="color:var(--muted);font-size:.9rem">После оплаты вы получите ссылку <code>wdtt://</code> для подключения в приложении.</p>
     """
     return web.Response(text=_page("Главная", body, session, active="Главная"), content_type="text/html")
 
@@ -562,8 +584,8 @@ async def handle_profile(request: web.Request) -> web.Response:
         diff = expires_at - now
         days, hours = diff // 86400, (diff % 86400) // 3600
 
-        # ссылка wdtt:// и трафик из панели
-        link = "—"
+        # ссылки подключения и трафик из панели (как в мини-приложении)
+        links: dict = {}
         used_bytes = 0
         total_gb = int(plan.get("traffic_gb") or 0) if plan else 0
         try:
@@ -573,13 +595,14 @@ async def handle_profile(request: web.Request) -> web.Response:
                 server = await get_server(sid)
                 client = WdttClient(server["base_url"], server["username"], server["password"], verify_ssl=bool(server["verify_ssl"]))
                 await client.login()
-                link = await client.find_link(customer["wdtt_password"])
+                import bot as _bot  # lazy: bot импортирует web_app
+                links = await _bot.links_json(client, customer["wdtt_password"], customer.get("sub_id"))
                 info = await client.get_user_info(customer["wdtt_password"]) or {}
                 used_bytes = int(info.get("up_bytes") or 0) + int(info.get("down_bytes") or 0)
                 await client.close()
         except Exception as e:
-            log.warning("не удалось получить ссылку wdtt://: %s", e)
-            link = "ссылка временно недоступна"
+            log.warning("не удалось получить ссылки подключения: %s", e)
+        links_html = _links_html(links)
 
         # прогресс-бар трафика
         traffic_html = ""
@@ -605,8 +628,9 @@ async def handle_profile(request: web.Request) -> web.Response:
           <p>Статус: <span class="badge {badge}">{status_text}</span></p>
           {traffic_html}
           <h4>🔗 Ссылка для подключения:</h4>
-          <div class="mono"><code>{html.escape(str(link))}</code></div>
+          {links_html}
           <p style="color:var(--muted);font-size:.85rem">Скопируйте ссылку в приложение WDTT (Android / iOS / Windows).</p>
+          <a href="{APP_WINDOWS_URL}" class="btn secondary" target="_blank" rel="noopener">🪟 Подключить на Windows — скачать PWDTT</a>
           <a href="/buy/{customer['plan_id']}" class="btn secondary">Продлить подписку</a>
         </div>
         """

@@ -194,7 +194,14 @@ async def api_pay_yookassa(request: web.Request) -> web.Response:
     customer = await get_customer(uid)
     username = None
     # достаём username из сессии нельзя — берём из initData при auth; здесь None допустим
-    p = await yk.create_payment(plan, uid)
+    try:
+        p = await yk.create_payment(plan, uid)
+    except Exception as e:
+        log.exception("api_pay_yookassa: не удалось создать платёж (тариф %s)", plan_id)
+        return web.json_response(
+            {"error": "Не удалось создать платёж. Попробуйте ещё раз через минуту."},
+            status=502,
+        )
     await add_payment(uid, username, p["id"], plan["id"], f"{float(plan['price']):.2f}")
     return web.json_response({"url": p["url"], "payment_id": p["id"]})
 
@@ -237,8 +244,23 @@ async def api_check_payment(request: web.Request) -> web.Response:
 
 # ---------- app ----------
 
+@web.middleware
+async def error_logger_mw(request: web.Request, handler):
+    """Логирует необработанные исключения (HTTP 500) с путём и текстом ошибки."""
+    try:
+        return await handler(request)
+    except web.HTTPException:
+        raise
+    except Exception:
+        log.exception("HTTP 500 на %s %s", request.method, request.path)
+        return web.json_response(
+            {"error": "Внутренняя ошибка сервера. Попробуйте ещё раз через минуту."},
+            status=500,
+        )
+
+
 def make_webapp() -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[error_logger_mw])
     app.router.add_post("/api/auth", api_auth)
     app.router.add_get("/api/me", api_me)
     app.router.add_get("/api/plans", api_plans)

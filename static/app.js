@@ -40,6 +40,7 @@
     token = data.token;
     sessionStorage.setItem('wdtt_token', token);
     window.__starsEnabled = false;
+    window.__apps = (data.ecosystem && data.ecosystem.apps) || {};
     return data.user;
   }
 
@@ -92,6 +93,22 @@
   function siteLinkHtml() {
     const url = window.__siteUrl || '';
     return url ? `<a class="site-link" href="${esc(url)}" target="_blank" rel="noopener">🌐 Открыть сайт ${esc(url.replace(/^https?:\/\//, ''))}</a>` : '';
+  }
+
+  // Приложения для подключения — ссылки приходят из /api/auth (ecosystem.apps)
+  function appsHtml() {
+    const a = window.__apps || {};
+    const items = [
+      ['🤖', 'Android', 'скачать APK', a.android],
+      ['🍎', 'iOS', 'TestFlight', a.ios_testflight],
+      ['🪟', 'Windows', 'скачать PWDTT', a.windows],
+    ].filter((it) => it[3]);
+    if (!items.length) return '';
+    return `<div class="card"><h3>📱 Приложения для подключения</h3><div class="apps">` +
+      items.map(([ico, name, sub, url]) =>
+        `<a class="app-link" href="${esc(url)}" target="_blank" rel="noopener">` +
+        `<span class="app-ico">${ico}</span><span>${esc(name)}<br><small>${esc(sub)}</small></span></a>`).join('') +
+      `</div></div>`;
   }
 
   function navHtml() {
@@ -237,15 +254,8 @@
         <button class="btn secondary sm" onclick="pay('${p.id}','yookassa',this)">Оплатить</button>
       </div>`;
     const plans = plansData.plans || [];
-    // «популярный» — средний по цене тариф (визуально выделяем)
-    let topIdx = -1;
-    if (plans.length > 1) {
-      let best = -1, bestPrice = -1;
-      plans.forEach((p, i) => { const pr = Number(p.price) || 0; if (pr > bestPrice) { bestPrice = pr; best = i; } });
-      topIdx = best;
-    }
-    const rows = plans.map((p, i) => `
-      <div class="plan${i === topIdx ? ' is-top' : ''}">
+    const rows = plans.map((p) => `
+      <div class="plan">
         <div><div class="name">${esc(p.name)}</div><div class="desc">${esc(planMeta(p))}</div></div>
         <div class="price">
           <div class="rub">${p.price} ₽</div>
@@ -263,6 +273,7 @@
     return headHtml('Тарифы', 'Выберите подходящий план') +
       `<div class="card flush">${rows}</div>` +
       (addons ? `<h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--hint);margin:16px 16px 0;font-weight:700">Больше устройств</h3><div class="card flush">${addons}</div>` : '') +
+      appsHtml() +
       `<div class="card"><p class="note">Оплата: ЮKassa (карта/СБП). После оплаты доступ выдаётся автоматически. Лимит трафика есть только у пробного периода.</p></div>` +
       '';
   }

@@ -171,12 +171,23 @@ button { font-family: inherit; }
 .plan .name { font-weight: 650; }
 .plan .desc { font-size: 12px; color: var(--hint); margin-top: 2px; }
 .plan .price { text-align: right; flex: none; }
-.plan .price .rub { font-weight: 750; font-size: 17px; }
+.plan .price .rub { font-weight: 750; font-size: 17px; color: var(--btn); }
 .plan .price .stars { font-size: 12px; color: var(--hint); margin-bottom: 6px; }
 .plan .actions { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
-.plan.is-top .name::after {
-  content: '🔥'; margin-left: 6px; font-size: 12px;
+
+/* ===== приложения для подключения ===== */
+.apps { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0; }
+.app-link {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--card); border: 1px solid var(--border); border-radius: 13px;
+  padding: 10px 12px; color: var(--text); text-decoration: none;
+  font-weight: 650; font-size: 13px; line-height: 1.25;
+  flex: 1 1 140px; justify-content: center; text-align: center;
+  transition: transform .15s ease, border-color .15s ease;
 }
+.app-link:active { transform: scale(.985); }
+.app-link small { color: var(--hint); font-weight: 400; font-size: 11px; }
+.app-link .app-ico { font-size: 20px; }
 
 /* ===== нижняя навигация (всегда закреплена снизу) ===== */
 .nav {
