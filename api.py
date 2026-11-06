@@ -130,7 +130,6 @@ def _plan_json(p: dict, addon: bool) -> dict:
         "max_devices": p.get("max_devices", 1),
         "description": p.get("description", ""),
         "addon": addon,
-        "stars": max(1, round(float(p["price"]) * config.STARS_RATE)),
     }
 
 
@@ -143,8 +142,8 @@ async def plans_payload() -> dict:
         "plans": [_plan_json(p, False) for p in plans],
         "addons": [_plan_json(p, True) for p in DEVICE_ADDONS],
         "trial": _plan_json(TRIAL, False) | {"price": 0, "free": True},
-        "stars_enabled": config.STARS_ENABLED,
-        "stars_rate": config.STARS_RATE,
+        # оплата Telegram Stars в мини-приложении отключена
+        "stars_enabled": False,
     }
 
 
@@ -206,8 +205,7 @@ async def h_auth(request: web.Request) -> web.Response:
     return web.json_response({
         "token": make_session(uid, config.TELEGRAM_TOKEN),
         "user": {"id": uid, "first_name": user.get("first_name", ""), "username": user.get("username", "")},
-        "stars_enabled": config.STARS_ENABLED,
-        "stars_rate": config.STARS_RATE,
+        "stars_enabled": False,
         "ecosystem": ecosystem_payload(),
     })
 

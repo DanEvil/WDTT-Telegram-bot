@@ -39,8 +39,7 @@
     const data = await api('/api/auth', { method: 'POST', body: JSON.stringify({ initData }) });
     token = data.token;
     sessionStorage.setItem('wdtt_token', token);
-    window.__starsEnabled = data.stars_enabled;
-    window.__starsRate = data.stars_rate;
+    window.__starsEnabled = false;
     return data.user;
   }
 
@@ -118,7 +117,11 @@
 
   function headHtml(title, sub) {
     const brand = window.__brand || 'K.O. Gateway';
-    const mark = brand.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
+    const first = (brand.trim().split(/\s+/)[0] || brand);
+    // «K.O. Gateway» -> «K.O.», «Gateway» -> «GW»
+    const mark = /[.·:—-]/.test(first)
+      ? first.slice(0, 4).toUpperCase()
+      : brand.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
     return `<div class="header"><div class="brand-mark">${esc(mark)}</div>
       <div><div>${esc(title)}</div><small>${esc(sub || brand)}</small></div></div>`;
   }
@@ -231,9 +234,7 @@
     if (!plansData) plansData = await api('/api/plans');
     const planActions = (p) => `
       <div class="actions">
-        ${window.__starsEnabled ? `<div class="stars">или ${p.stars} ⭐</div>` : ''}
         <button class="btn secondary sm" onclick="pay('${p.id}','yookassa',this)">Оплатить</button>
-        ${window.__starsEnabled ? `<button class="btn sm" onclick="pay('${p.id}','stars',this)">⭐ ${p.stars}</button>` : ''}
       </div>`;
     const plans = plansData.plans || [];
     // «популярный» — средний по цене тариф (визуально выделяем)
@@ -262,7 +263,7 @@
     return headHtml('Тарифы', 'Выберите подходящий план') +
       `<div class="card flush">${rows}</div>` +
       (addons ? `<h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--hint);margin:16px 16px 0;font-weight:700">Больше устройств</h3><div class="card flush">${addons}</div>` : '') +
-      `<div class="card"><p class="note">Оплата: ЮKassa (карта/СБП) или Telegram Stars ⭐. После оплаты доступ выдаётся автоматически. Лимит трафика есть только у пробного периода.</p></div>` +
+      `<div class="card"><p class="note">Оплата: ЮKassa (карта/СБП). После оплаты доступ выдаётся автоматически. Лимит трафика есть только у пробного периода.</p></div>` +
       '';
   }
 

@@ -83,8 +83,7 @@ async def api_auth(request: web.Request) -> web.Response:
             "first_name": user.get("first_name", ""),
             "username": user.get("username", ""),
         },
-        "stars_enabled": config.STARS_ENABLED,
-        "stars_rate": config.STARS_RATE,
+        "stars_enabled": False,
         "minapp_url": config.MINIAPP_URL,
     })
 
@@ -147,7 +146,6 @@ async def api_plans(request: web.Request) -> web.Response:
             "price": p["price"], "traffic_gb": p.get("traffic_gb", 0),
             "max_devices": p.get("max_devices", 1), "description": p.get("description", ""),
             "addon": False,
-            "stars": max(1, round(float(p["price"]) * config.STARS_RATE)),
         })
     addons = []
     for p in DEVICE_ADDONS:
@@ -156,9 +154,8 @@ async def api_plans(request: web.Request) -> web.Response:
             "price": p["price"], "traffic_gb": p.get("traffic_gb", 0),
             "max_devices": p.get("max_devices", 1), "description": p.get("description", ""),
             "addon": True,
-            "stars": max(1, round(float(p["price"]) * config.STARS_RATE)),
         })
-    return web.json_response({"plans": out, "addons": addons, "trial": TRIAL, "stars_enabled": config.STARS_ENABLED})
+    return web.json_response({"plans": out, "addons": addons, "trial": TRIAL, "stars_enabled": False})
 
 
 async def api_trial(request: web.Request) -> web.Response:
@@ -203,31 +200,12 @@ async def api_pay_yookassa(request: web.Request) -> web.Response:
 
 
 async def api_pay_stars(request: web.Request) -> web.Response:
-    """Создаёт инвойс Telegram Stars, возвращает invoice_link."""
-    if not config.STARS_ENABLED:
-        return web.json_response({"error": "stars disabled"}, status=400)
-    uid = _user_id(request)
-    body = await _json_body(request)
-    plan_id = str(body.get("plan_id") or "")
-    plan = await get_plan(plan_id)
-    if not plan:
-        from plans import ALL_PLANS_BY_ID
-        plan = ALL_PLANS_BY_ID.get(plan_id)
-    if not plan or plan_id == "trial":
-        return web.json_response({"error": "plan not found"}, status=404)
-    import bot as b
-    from aiogram.types import LabeledPrice
-    stars = max(1, round(float(plan["price"]) * config.STARS_RATE))
-    payload = json.dumps({"plan_id": plan["id"], "tg": uid})
-    link = await b.bot.create_invoice_link(
-        title=f"WDTT — {plan['name']}",
-        description=f"{plan['days']} дн., {plan.get('description', '')}",
-        payload=payload,
-        provider_token="",  # для Stars — пустой
-        currency="XTR",
-        prices=[LabeledPrice(label=plan["name"], amount=stars)],
-    )
-    return web.json_response({"url": link, "stars": stars})
+    """Оплата Telegram Stars в мини-приложении отключена.
+
+    Инвойсы Stars выдаёт только бот (кнопка в чате) — в мини-приложении
+    доступна оплата картой/СБП через ЮKassa.
+    """
+    return web.json_response({"error": "stars disabled"}, status=400)
 
 
 async def api_referrals(request: web.Request) -> web.Response:
