@@ -55,7 +55,7 @@ DEVICE_ADDONS = [
         "traffic_gb": 0,
         "max_devices": 5,
         "addon": True,
-        "description": "+2 устройства к подписке (итого до 5) — +100 ₽",
+        "description": "+2 устройства к подписке (итого 5)",
     },
     {
         "id": "devices10",
@@ -65,7 +65,7 @@ DEVICE_ADDONS = [
         "traffic_gb": 0,
         "max_devices": 10,
         "addon": True,
-        "description": "+7 устройств к подписке (итого до 10) — +200 ₽",
+        "description": "+7 устройств к подписке (итого 10)",
     },
 ]
 
