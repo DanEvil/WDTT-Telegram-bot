@@ -100,8 +100,20 @@
       ['home', '🏠', 'Главная'], ['plans', '🛒', 'Тарифы'], ['ref', '👥', 'Рефералы'],
       ['help', '📖', 'Инструкция'], ['settings', '⚙️', 'Настройки'],
     ];
-    return `<nav class="nav">${items.map(([k, ico, label]) =>
-      `<button class="${view === k ? 'active' : ''}" onclick="go('${k}')"><span class="ico">${ico}</span><span>${label}</span></button>`).join('')}</nav>`;
+    return items.map(([k, ico, label]) =>
+      `<button class="${view === k ? 'active' : ''}" onclick="go('${k}')"><span class="ico">${ico}</span><span>${label}</span></button>`).join('');
+  }
+
+  // Навигация живёт вне #app (отдельный flex-item), поэтому всегда остаётся
+  // внизу экрана, а прокручивается только содержимое.
+  // innerHTML безопасен: navHtml() собирает только собственную разметку из констант.
+  function renderNav() {
+    const bar = document.getElementById('navbar');
+    if (bar) bar.querySelector('.nav-inner').innerHTML = navHtml();
+  }
+
+  function scrollTop() {
+    app.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   function headHtml(title, sub) {
@@ -136,7 +148,7 @@
         <select id="notify_hours" ${s.notify_hours > 0 ? '' : 'disabled'}>${opts}</select>
         <button class="btn" style="margin-top:16px" onclick="saveSettings(this)">Сохранить</button>
       </div>
-      <div class="card"><p class="note">Автопродление всегда списывает стоимость только месячного тарифа и добавляет 30 дней к текущей дате окончания. Отключить можно в любой момент.</p></div>` + navHtml();
+      <div class="card"><p class="note">Автопродление всегда списывает стоимость только месячного тарифа и добавляет 30 дней к текущей дате окончания. Отключить можно в любой момент.</p></div>`;
   }
 
   window.saveSettings = async function (btn) {
@@ -204,7 +216,7 @@
         Object.entries(me.links).map(([k, v]) => linkBlock(labels[k] || k, v)).join('');
     }
     return headHtml(window.__brand || 'K.O. Gateway', 'Управление подпиской') +
-      statusCard + linksHtml + siteLinkHtml() + navHtml();
+      statusCard + linksHtml + siteLinkHtml();
   }
 
   function planMeta(p) {
@@ -251,7 +263,7 @@
       `<div class="card flush">${rows}</div>` +
       (addons ? `<h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--hint);margin:16px 16px 0;font-weight:700">Больше устройств</h3><div class="card flush">${addons}</div>` : '') +
       `<div class="card"><p class="note">Оплата: ЮKassa (карта/СБП) или Telegram Stars ⭐. После оплаты доступ выдаётся автоматически. Лимит трафика есть только у пробного периода.</p></div>` +
-      navHtml();
+      '';
   }
 
   async function refHtml() {
@@ -265,7 +277,7 @@
         <button class="btn" style="margin-top:12px" onclick="shareRef()">📤 Отправить приглашение</button>
         <button class="btn secondary" onclick="copyLink(lastRefLink)">📋 Скопировать ссылку</button>
       </div>
-      <div class="card"><p class="note">«Отправить» — выбор чатов внутри Telegram. «Скопировать» — ссылка в буфере обмена: вставьте в письмо или другой мессенджер.</p></div>` + navHtml();
+      <div class="card"><p class="note">«Отправить» — выбор чатов внутри Telegram. «Скопировать» — ссылка в буфере обмена: вставьте в письмо или другой мессенджер.</p></div>`;
   }
 
   let lastRefLink = '';
@@ -296,7 +308,7 @@
         ${steps(['Установите приложение из App Store.',
                  'Вставьте iOS-ссылку из главного экрана приложения.',
                  'Разрешите VPN в настройках iOS и подключитесь.'])}
-      </div>` + navHtml();
+      </div>`;
   }
 
   async function render() {
@@ -309,19 +321,21 @@
       else if (view === 'help') html = helpHtml();
       else if (view === 'settings') html = await settingsHtml();
       app.innerHTML = `<div class="view-enter">${html}</div>`;
+      renderNav();
     } catch (e) {
       app.innerHTML = `<div class="view-enter"><div class="card">
         <div class="hero-title">Что-то пошло не так</div>
         <div class="hero-sub" style="color:var(--hint)">${esc(e.message)}</div>
         <button class="btn" onclick="render()">🔄 Повторить</button></div></div>`;
+      renderNav();
     }
   }
 
   window.go = function (v) {
-    if (v === view) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+    if (v === view) { scrollTop(); return; }
     view = v;
     if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    scrollTop();
     render();
   };
 
@@ -375,6 +389,7 @@
   (async function boot() {
     // Скелетоны на время загрузки данных
     app.innerHTML = skeletonHtml();
+    renderNav();
     try {
       await auth();
       me = await api('/api/me');
@@ -385,6 +400,7 @@
         <div class="hero-sub" style="color:var(--hint)">${esc(e.message)}</div>
         <p class="note">Откройте приложение через кнопку в боте.</p>
         <button class="btn" onclick="location.reload()">🔄 Повторить</button></div></div>`;
+      renderNav();
     }
   })();
 })();
