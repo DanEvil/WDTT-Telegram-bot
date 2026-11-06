@@ -218,7 +218,10 @@ def _is_admin(telegram_id: int) -> bool:
 _FAVICON = (
     "data:image/svg+xml,"
     "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E"
-    "%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%92%3C/text%3E%3C/svg%3E"
+    "%3Ccircle cx='50' cy='50' r='48' fill='%23e01e2b'/%3E"
+    "%3Ctext x='50' y='66' font-size='40' font-family='Arial,Helvetica,sans-serif' "
+    "font-weight='bold' fill='white' text-anchor='middle'%3EK.O.%3C/text%3E"
+    "%3C/svg%3E"
 )
 
 def _page(title: str, body: str, session: dict | None = None, active: str = "") -> str:
@@ -263,7 +266,7 @@ def _page(title: str, body: str, session: dict | None = None, active: str = "") 
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#2563eb">
+<meta name="theme-color" content="#0a0a0c">
 <meta name="description" content="{html.escape(BRAND)} — управление подпиской, подключение и оплата">
 <meta property="og:title" content="{html.escape(title)} — {html.escape(BRAND)}">
 <meta property="og:description" content="Подписка и подключение без VPN: Android, iOS, Windows">

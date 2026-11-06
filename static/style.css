@@ -1,31 +1,22 @@
-/* WDTT Mini App — Telegram-native UI: тема из tg.themeParams, safe-area, bottom-nav */
+/* WDTT Mini App — красно-чёрная палитра, Telegram-native layout */
 :root {
-  color-scheme: light dark;
-  --bg: var(--tg-theme-bg-color, #f2f3f5);
-  --card: var(--tg-theme-secondary-bg-color, #ffffff);
-  --text: var(--tg-theme-text-color, #0f1419);
-  --hint: var(--tg-theme-hint-color, #707579);
-  --link: var(--tg-theme-link-color, #2aabee);
-  --btn: var(--tg-theme-button-color, #2aabee);
-  --btn-text: var(--tg-theme-button-text-color, #ffffff);
-  --border: color-mix(in srgb, var(--hint) 22%, transparent);
-  --soft: color-mix(in srgb, var(--hint) 12%, transparent);
-  --ok: #3ba55d;
-  --err: #e53935;
+  color-scheme: dark;
+  --bg: #0a0a0c;
+  --card: #141418;
+  --text: #f2f2f4;
+  --hint: #9b9ba6;
+  --link: #ff3b47;
+  --btn: #e01e2b;
+  --btn-text: #ffffff;
+  --border: rgba(255,255,255,.12);
+  --soft: rgba(255,255,255,.07);
+  --ok: #22c55e;
+  --err: #ff4d5a;
   --warn: #f59e0b;
   --radius: 16px;
-  --shadow: 0 2px 10px rgba(15, 20, 25, .06);
+  --shadow: 0 2px 10px rgba(0, 0, 0, .45);
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-t: env(safe-area-inset-top, 0px);
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: var(--tg-theme-bg-color, #17212b);
-    --card: var(--tg-theme-secondary-bg-color, #232e3c);
-    --text: var(--tg-theme-text-color, #ffffff);
-    --hint: var(--tg-theme-hint-color, #7d8b9b);
-    --shadow: 0 2px 12px rgba(0, 0, 0, .25);
-  }
 }
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
 html { -webkit-text-size-adjust: 100%; }
@@ -69,7 +60,7 @@ button { font-family: inherit; }
   width: auto; min-width: 38px; height: 38px; flex: none;
   padding: 0 9px;
   border-radius: 12px;
-  background: linear-gradient(135deg, var(--btn), color-mix(in srgb, var(--btn) 45%, #7c3aed));
+  background: linear-gradient(135deg, var(--btn), color-mix(in srgb, var(--btn) 45%, #000));
   color: #fff; font-size: 15px; font-weight: 800; letter-spacing: .4px;
   display: grid; place-items: center; white-space: nowrap;
   box-shadow: 0 4px 12px color-mix(in srgb, var(--btn) 35%, transparent);
@@ -93,7 +84,7 @@ button { font-family: inherit; }
 
 /* ===== hero-карточка подписки ===== */
 .hero-card {
-  background: linear-gradient(135deg, var(--btn), color-mix(in srgb, var(--btn) 40%, #7c3aed));
+  background: linear-gradient(135deg, var(--btn), color-mix(in srgb, var(--btn) 40%, #000));
   color: #fff; border: none;
   box-shadow: 0 10px 26px color-mix(in srgb, var(--btn) 30%, transparent);
   padding: 18px 16px;
@@ -125,7 +116,7 @@ button { font-family: inherit; }
 .bar { height: 8px; border-radius: 999px; background: var(--soft); overflow: hidden; margin-top: 8px; }
 .bar > div {
   height: 100%; border-radius: 999px;
-  background: linear-gradient(90deg, var(--btn), color-mix(in srgb, var(--btn) 40%, #7c3aed));
+  background: linear-gradient(90deg, var(--btn), color-mix(in srgb, var(--btn) 40%, #000));
   transition: width .5s cubic-bezier(.22,1,.36,1);
 }
 
