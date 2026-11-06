@@ -966,12 +966,31 @@ async def _bind_site_code(message: Message, code: str) -> None:
     await mark_bind_code_used(code)
     # фиксируем пользователя Telegram в базе (customers), чтобы подписка
     # была привязана и работала выдача/продление через бота
+    tg_id = message.from_user.id
     async with db_conn() as db:
+        # если подписка была куплена на сайте без привязки (псевдо-id),
+        # переносим её на реальный telegram_id
+        old_id = -abs(int(site_user["id"]))
+        cur = await db.execute("SELECT telegram_id FROM customers WHERE telegram_id = ?", (tg_id,))
+        already = await cur.fetchone()
+        if not already:
+            cur = await db.execute(
+                "SELECT telegram_id FROM customers WHERE telegram_id = ?", (old_id,)
+            )
+            old_row = await cur.fetchone()
+            if old_row:
+                await db.execute(
+                    "UPDATE customers SET telegram_id = ?, username = COALESCE(NULLIF(?, ''), username) "
+                    "WHERE telegram_id = ?",
+                    (tg_id, message.from_user.username or message.from_user.first_name or "", old_id),
+                )
+                await db.execute("UPDATE payments SET telegram_id = ? WHERE telegram_id = ?", (tg_id, old_id))
+                await db.execute("UPDATE trials SET telegram_id = ? WHERE telegram_id = ?", (tg_id, old_id))
         await db.execute(
             "INSERT INTO customers (telegram_id, username, expires_at, plan_id, server_id, created_at) "
             "VALUES (?, ?, 0, NULL, NULL, ?) "
             "ON CONFLICT(telegram_id) DO UPDATE SET username=COALESCE(excluded.username, customers.username)",
-            (message.from_user.id, message.from_user.username or message.from_user.first_name or "",
+            (tg_id, message.from_user.username or message.from_user.first_name or "",
              int(time.time())),
         )
     await message.answer(
@@ -1397,7 +1416,12 @@ async def fulfill_payment(payment_id: str) -> None:
                 + "\nИнструкция по подключению — кнопка 📖 Инструкция"
             )
         try:
-            await bot.send_message(telegram_id, message_text)
+            if telegram_id > 0:
+                await bot.send_message(telegram_id, message_text)
+            else:
+                # покупка с сайта без привязки Telegram — доступ пользователь
+                # увидит в профиле на сайте
+                log.info("оплата %s: доступ выдан пользователю сайта (без Telegram)", payment_id)
         except Exception:
             log.warning("не удалось отправить доступ клиенту %s", telegram_id)
 

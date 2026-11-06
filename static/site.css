@@ -106,22 +106,42 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
   position: relative; overflow: hidden;
   transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
 }
-.plan.is-popular {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent), 0 12px 28px rgba(37,99,235,.16);
-}
-.plan.is-popular::before {
-  content: '🔥 Популярный';
-  position: absolute; top: 0; right: 0;
-  background: var(--accent); color: #fff;
-  font-size: .7rem; font-weight: 700; letter-spacing: .3px;
-  padding: .28rem .7rem; border-radius: 0 .8rem 0 .6rem;
-}
 .plan h3 { margin: 0 0 .3rem; }
 .plan .desc { color: var(--muted); font-size: .85rem; margin: 0 0 .6rem; }
 .plan .price { font-size: 1.5rem; font-weight: 700; color: var(--accent); margin-bottom: .4rem; }
 .plan .meta { color: var(--muted); font-size: .85rem; margin-bottom: .8rem; }
 .plan .btn { margin-top: auto; text-align: center; }
+
+/* ---------- Telegram-кнопка в шапке ---------- */
+.topbar-right {
+  display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; justify-content: flex-end;
+}
+.tg-btn {
+  display: inline-flex; align-items: center; gap: .45rem;
+  background: linear-gradient(180deg, #35a9f0, #2291d6);
+  color: #fff !important; text-decoration: none;
+  font-weight: 600; font-size: .88rem; line-height: 1;
+  padding: .55rem .85rem; border-radius: 999px;
+  box-shadow: 0 2px 10px rgba(34,145,214,.28);
+  transition: transform .15s ease, box-shadow .15s ease, filter .15s ease;
+  white-space: nowrap;
+}
+.tg-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(34,145,214,.36); filter: brightness(1.05); }
+.tg-btn:active { transform: translateY(0); }
+.tg-ico { width: 18px; height: 18px; display: block; flex: 0 0 auto; }
+.btn-tg {
+  display: inline-flex; align-items: center; gap: .45rem;
+  background: linear-gradient(180deg, #35a9f0, #2291d6);
+  color: #fff !important; border: 0;
+  font-weight: 600; padding: .7rem 1.1rem; border-radius: .7rem;
+  box-shadow: 0 2px 10px rgba(34,145,214,.28);
+  text-decoration: none;
+}
+.btn-tg:hover { filter: brightness(1.05); }
+@media (max-width: 560px) {
+  .tg-btn span { display: none; }
+  .tg-btn { padding: .55rem .6rem; }
+}
 
 /* ===== преимущества ===== */
 .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: .9rem; margin: 1rem 0; }

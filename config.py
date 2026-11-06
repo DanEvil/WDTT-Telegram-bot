@@ -72,7 +72,10 @@ APP_ANDROID_URL = os.getenv(
 ).strip()
 APP_IOS_TESTFLIGHT_URL = os.getenv("APP_IOS_TESTFLIGHT_URL", "https://apps.apple.com/app/testflight/id899247664").strip()
 APP_IOS_JOIN_URL = os.getenv("APP_IOS_JOIN_URL", "https://testflight.apple.com/join/ANm6cmDv").strip()
-APP_WINDOWS_URL = os.getenv("APP_WINDOWS_URL", "https://github.com/ildarmaga/wdtt/releases").strip()
+APP_WINDOWS_URL = os.getenv(
+    "APP_WINDOWS_URL",
+    "https://github.com/ildarmaga/wdtt/releases/download/v1.5.76/pwdtt-client-windows-amd64.exe",
+).strip()
 
 # Бот
 DB_PATH = os.getenv("DB_PATH", "bot.db").strip()

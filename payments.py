@@ -5,6 +5,7 @@ event loop бота) и меньше зависимостей. Аутентиф�
 (shopId:secretKey), каждый изменяющий запрос требует заголовок
 Idempotence-Key.
 """
+import json
 import logging
 from datetime import datetime
 from uuid import uuid4
@@ -47,23 +48,27 @@ def _iso_to_ts(value: str | None) -> int | None:
         return None
 
 
-async def create_payment(plan: dict, telegram_id: int, save_payment_method: bool = True) -> dict:
+async def create_payment(plan: dict, telegram_id: int, save_payment_method: bool = True,
+                        return_url: str | None = None) -> dict:
     """Создаёт платёж с автоподтверждением (capture=True).
 
     save_payment_method=True — просим ЮKassa сохранить способ оплаты (для автопродления).
+    return_url — куда вернуть пользователя после оплаты (по умолчанию RETURN_URL).
     Возвращает dict: {"id": ..., "status": ..., "url": ссылка на оплату}.
     """
     amount = f"{float(plan['price']):.2f}"
     payload = {
         "amount": {"value": amount, "currency": "RUB"},
-        "confirmation": {"type": "redirect", "return_url": RETURN_URL},
+        "confirmation": {"type": "redirect", "return_url": return_url or RETURN_URL},
         "capture": True,
         "description": f"WDTT — {plan['name']} ({plan['days']} дн.)",
         "metadata": {"telegram_id": str(telegram_id), "plan_id": str(plan["id"])},
     }
     if save_payment_method:
-        # разрешаем сохранить карту для будущих автоплатежей (54-ФЗ: нужен чек)
-        payload["save_payment_method"] = "allowed"
+        # ЮKassa больше не принимает save_payment_method="allowed".
+        # Сохранение карты требует разрешения рекуррентных платежей у магазина;
+        # если их нет — API отвечает 403, и платёж повторяется без сохранения карты.
+        payload["save_payment_method"] = True
     # Для соблюдения 54-ФЗ (выдача чека) раскомментируйте и заполните receipt:
     # "receipt": {"customer": {"email": "user@example.com"}, "items": [{...}]}
     # Подробнее: https://yookassa.ru/developers/using-api/receipts
@@ -73,10 +78,28 @@ async def create_payment(plan: dict, telegram_id: int, save_payment_method: bool
         json=payload,
         headers={"Idempotence-Key": str(uuid4())},
     )
+    if r.status_code == 403 and save_payment_method and "recurring" in (r.text or "").lower():
+        # магазин не поддерживает рекуррентные платежи — платим без сохранения карты
+        log.warning(
+            "ЮKassa: магазин не поддерживает рекуррентные платежи (403), "
+            "платёж создаётся без сохранения карты — автопродление недоступно"
+        )
+        payload.pop("save_payment_method", None)
+        r = await http.post(
+            f"{API_URL}/payments",
+            json=payload,
+            headers={"Idempotence-Key": str(uuid4())},
+        )
     if r.status_code >= 400:
         # ЮKassa возвращает описание ошибки в JSON: description + parameterViolations
         try:
-            err = r.json().get("description") or r.text[:300]
+            body = r.json()
+            err = body.get("description") or r.text[:300]
+            if body.get("parameter"):
+                err += f" (parameter={body['parameter']})"
+            viol = body.get("parameterViolations")
+            if viol:
+                err += " " + json.dumps(viol, ensure_ascii=False)[:300]
         except ValueError:
             err = r.text[:300]
         raise RuntimeError(f"ЮKassa: не удалось создать платёж (HTTP {r.status_code}): {err}")

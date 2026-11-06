@@ -62,7 +62,10 @@ BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "").strip()
 APP_ANDROID_URL = os.getenv("APP_ANDROID_URL", "https://github.com/amurcanov/proxy-turn-vk-android/releases/download/v1.2.4/WDTT-universal.apk").strip()
 APP_IOS_TESTFLIGHT_URL = os.getenv("APP_IOS_TESTFLIGHT_URL", "https://apps.apple.com/app/testflight/id899247664").strip()
 APP_IOS_JOIN_URL = os.getenv("APP_IOS_JOIN_URL", "https://testflight.apple.com/join/ANm6cmDv").strip()
-APP_WINDOWS_URL = os.getenv("APP_WINDOWS_URL", "https://github.com/ildarmaga/wdtt/releases").strip()
+APP_WINDOWS_URL = os.getenv(
+    "APP_WINDOWS_URL",
+    "https://github.com/ildarmaga/wdtt/releases/download/v1.5.76/pwdtt-client-windows-amd64.exe",
+).strip()
 
 
 def _brand_html() -> str:
@@ -71,6 +74,29 @@ def _brand_html() -> str:
     if len(parts) == 2:
         return f"{html.escape(parts[0])}<span> {html.escape(parts[1])}</span>"
     return html.escape(BRAND)
+
+
+def _site_return_url() -> str:
+    """URL возврата с сайта после оплаты.
+
+    ЮKassa не принимает пустой payment_id в return_url, поэтому идентификатор
+    платежа подставляется на странице успеха по последнему платежу пользователя.
+    """
+    base = SITE_URL or ""
+    return f"{base}/pay/success" if base else RETURN_URL
+
+
+def _sub_id(session: dict) -> int:
+    """Идентификатор подписки для пользователя сайта.
+
+    Если Telegram привязан — это его telegram_id, иначе — псевдо-id сайта
+    (отрицательный site_user_id). Псевдо-id позволяет покупать подписку без
+    привязки Telegram; при привязке запись переносится на реальный telegram_id.
+    """
+    tg = session.get("telegram_id")
+    if tg:
+        return int(tg)
+    return -abs(int(session.get("site_user_id") or 0))
 
 
 def _bot_link(start: str = "") -> str:
@@ -195,6 +221,12 @@ def _page(title: str, body: str, session: dict | None = None, active: str = "") 
         + navlink("/instruction", "Инструкция")
         + nav
     )
+    tg_btn = (
+        f"<a class='tg-btn' href='{_bot_link()}' target='_blank' rel='noopener'>"
+        f"<svg class='tg-ico' viewBox='0 0 24 24' aria-hidden='true'><path fill='currentColor' d="
+        f"\"M21.9 4.3 18.9 19c-.2 1-.8 1.2-1.6.8l-4.4-3.3-2.1 2c-.2.2-.4.4-.9.4l.3-4.5 8.2-7.4c.4-.3-.1-.5-.5-.2L7.9 13.3 3.5 11.8c-1-.3-1-1 .2-1.4l16.6-6.4c.8-.3 1.5.2 1.6 1.3z\"/></svg>"
+        f"<span>Бот в Telegram</span></a>"
+    ) if BOT_USERNAME else ""
     return f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -213,7 +245,7 @@ def _page(title: str, body: str, session: dict | None = None, active: str = "") 
 <a class="skip-link" href="#main">Перейти к содержимому</a>
 <header class="topbar">
   <div class="brand">{_brand_html()}</div>
-  {auth}
+  <div class="topbar-right">{tg_btn}{auth}</div>
 </header>
 <nav class="nav">{nav_html}</nav>
 <main id="main">
@@ -242,15 +274,10 @@ def _csrf_check_telegram(data: dict) -> bool:
 async def handle_index(request: web.Request) -> web.Response:
     session = _get_session(request)
     plans = await list_plans() or list(PLANS)
-    # помечаем «популярным» самый дорогой тариф (обычно месячный)
-    top_id = ""
-    if len(plans) > 1:
-        top_id = max(plans, key=lambda x: float(x.get("price") or 0)).get("id", "")
     plans_html = '<div class="plans">'
     for p in plans:
-        cls = "plan is-popular" if p.get("id") == top_id else "plan"
         plans_html += f"""
-        <div class="{cls}">
+        <div class="plan">
           <h3>{html.escape(p['name'])}</h3>
           <p class="desc">{html.escape(p.get('description',''))}</p>
           <div class="price">{fmt_price(p['price'])} ₽</div>
@@ -260,11 +287,8 @@ async def handle_index(request: web.Request) -> web.Response:
     plans_html += "</div>"
     trial_html = ""
     if session:
-        tg_id = session.get("telegram_id")
-        if tg_id:
-            used = await has_used_trial_web(tg_id)
-            if not used:
-                trial_html = f"""
+        if not await has_used_trial_web(_sub_id(session)):
+            trial_html = f"""
                 <div class="card trial-card">
                   <h3>🎁 Пробный период</h3>
                   <p>{TRIAL['days']} дн. · Трафик: {fmt_traffic(TRIAL['traffic_gb'])} · Устройств: {TRIAL['max_devices']}</p>
@@ -282,7 +306,7 @@ async def handle_index(request: web.Request) -> web.Response:
           <span class="app-ico">🍎</span><span>iOS<br><small>TestFlight → <a href="{APP_IOS_JOIN_URL}" target="_blank" rel="noopener">приглашение</a></small></span>
         </a>
         <a class="app-link" href="{APP_WINDOWS_URL}" target="_blank" rel="noopener">
-          <span class="app-ico">🪟</span><span>Windows<br><small>клиент qWDTT</small></span>
+          <span class="app-ico">🪟</span><span>Windows<br><small>скачать PWDTT</small></span>
         </a>
       </div>
       <p style="color:var(--muted);font-size:.85rem;margin-bottom:0">
@@ -291,41 +315,13 @@ async def handle_index(request: web.Request) -> web.Response:
       </p>
     </div>
     """
-    eco_html = f"""
-    <div class="card apps-card">
-      <h3>🌐 Экосистема {html.escape(BRAND)}</h3>
-      <div class="apps">
-        {f'<a class="app-link" href="{_bot_link()}" target="_blank" rel="noopener"><span class="app-ico">🤖</span><span>Telegram-бот<br><small>t.me/{html.escape(BOT_USERNAME)}</small></span></a>' if BOT_USERNAME else ''}
-        {f'<a class="app-link" href="{os.getenv("MINIAPP_URL", "").strip().rstrip("/")}" target="_blank" rel="noopener"><span class="app-ico">📲</span><span>Мини-приложение<br><small>внутри Telegram</small></span></a>' if os.getenv("MINIAPP_URL", "").strip() else ''}
-        <a class="app-link" href="{APP_ANDROID_URL}" target="_blank" rel="noopener"><span class="app-ico">🤖</span><span>Android<br><small>APK</small></span></a>
-        <a class="app-link" href="{APP_IOS_TESTFLIGHT_URL}" target="_blank" rel="noopener"><span class="app-ico">🍎</span><span>iOS<br><small>TestFlight</small></span></a>
-        <a class="app-link" href="{APP_WINDOWS_URL}" target="_blank" rel="noopener"><span class="app-ico">🪟</span><span>Windows<br><small>qWDTT</small></span></a>
-      </div>
-      <p style="color:var(--muted);font-size:.85rem;margin-bottom:0">
-        Одна подписка — везде: бот, мини-приложение, сайт и клиентские приложения работают
-        с одной базой и одним API (<code>/api/v1/*</code>).
-      </p>
-    </div>
-    """
+    eco_html = ""
     body = f"""
-    <div class="hero">
-      <div class="hero-text">
-        <h2>{html.escape(BRAND)}</h2>
-        <p>Стабильный доступ без VPN: трафик маскируется под обычные видеозвонки VK —
-           быстро, надёжно и незаметно для провайдера.</p>
-        <p>
-          <a href="#plans" class="btn">Тарифы</a>
-          <a href="/instruction" class="btn secondary">Инструкция</a>
-          {f'<a href="{_bot_link()}" class="btn secondary">🤖 Бот в Telegram</a>' if BOT_USERNAME else ''}
-        </p>
-      </div>
-    </div>
     {trial_html}
     <div id="plans"></div>
     <h2>Тарифы</h2>
     {plans_html or "<p>Тарифы не настроены.</p>"}
     {apps_html}
-    {eco_html}
     <p style="color:var(--muted);font-size:.9rem">После оплаты вы получите ссылку <code>wdtt://</code> для подключения в приложении.</p>
     """
     return web.Response(text=_page("Главная", body, session, active="Главная"), content_type="text/html")
@@ -509,6 +505,24 @@ async def handle_auth_telegram(request: web.Request) -> web.Response:
     })
     return response
 
+async def _ensure_bind_code(site_user_id: int) -> str:
+    """Возвращает неиспользованный код привязки, создавая его при необходимости."""
+    async with db_conn() as db:
+        cur = await db.execute(
+            "SELECT code FROM bind_codes WHERE site_user_id = ? AND used = 0 ORDER BY created_at DESC LIMIT 1",
+            (site_user_id,),
+        )
+        row = await cur.fetchone()
+        if row:
+            return row["code"]
+        code = secrets.token_urlsafe(8)
+        await db.execute(
+            "INSERT INTO bind_codes (code, site_user_id, created_at, used) VALUES (?, ?, ?, 0)",
+            (code, site_user_id, int(time.time())),
+        )
+        return code
+
+
 async def handle_profile(request: web.Request) -> web.Response:
     session = _require_site_session(request)
     site_user_id = session["site_user_id"]
@@ -521,13 +535,13 @@ async def handle_profile(request: web.Request) -> web.Response:
         row = await cur.fetchone()
         site_user = dict(row) if row else {}
 
-    customer = await get_customer(tg_id) if tg_id else None
+    customer = await get_customer(_sub_id(session))
     now = int(time.time())
 
     # ----- реферальные ссылки -----
     bot_username = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip()
     tg_ref_link = f"https://t.me/{bot_username}?start=ref_{tg_id}" if (bot_username and tg_id) else "—"
-    site_ref_link = f"{os.getenv('WEB_BASE_URL', '')}/r/{site_user['referral_code']}" if site_user.get("referral_code") else "—"
+    site_ref_link = f"{SITE_URL}/r/{site_user['referral_code']}" if (site_user.get("referral_code") and SITE_URL) else "—"
     tg_ref_count = await get_referrals_count(tg_id) if tg_id else 0
     site_ref_count = await get_site_referrals_count(site_user_id)
 
@@ -634,22 +648,29 @@ async def handle_profile(request: web.Request) -> web.Response:
 
     # ----- привязка Telegram -----
     if not tg_id:
-        body += """
-        <div class="card">
-          <h3>🔗 Привязка Telegram</h3>
-          <p>Привяжите свой Telegram-аккаунт, чтобы видеть подписку и в боте.</p>
-          <a href="/bind-telegram" class="btn">Получить код привязки</a>
-        </div>
+        bind_link = _bot_link(f"bind_{await _ensure_bind_code(site_user_id)}")
+        body += f"""
+    <div class="card">
+      <h3>🔗 Привязка Telegram</h3>
+      <p>Привяжите свой Telegram-аккаунт, чтобы видеть подписку и в боте.</p>
+      {f'<p style="color:var(--muted);font-size:.85rem">Нажмите кнопку — откроется Telegram, и аккаунт привяжется автоматически.</p><a href="{bind_link}" class="btn btn-tg" target="_blank" rel="noopener">Перейти в Telegram и привязать</a>' if bind_link else '<a href="/bind-telegram" class="btn">Получить код привязки</a>'}
+    </div>
         """
 
     # ----- рефералы -----
+    tg_ref_hint = (
+        ""
+        if tg_id
+        else '<p style="color:var(--muted);font-size:.85rem">Для начала необходимо подключить Telegram-аккаунт</p>'
+    )
     body += f"""
     <div class="card">
       <h3>👥 Реферальная программа</h3>
       <p><b>Ссылка в Telegram:</b></p>
       <div class="mono"><code>{html.escape(tg_ref_link)}</code></div>
+      {tg_ref_hint}
       <p style="color:var(--muted);font-size:.85rem">Приглашено через TG: <b>{tg_ref_count}</b></p>
-      <p><b>Ссылка на сайте:</b></p>
+      <p><b>Ссылка на сайт:</b></p>
       <div class="mono"><code>{html.escape(site_ref_link)}</code></div>
       <p style="color:var(--muted);font-size:.85rem">Приглашено через сайт: <b>{site_ref_count}</b></p>
       <p style="color:var(--muted);font-size:.85rem">После первой оплаты приглашённого вы получаете бонусные дни к подписке.</p>
@@ -690,14 +711,7 @@ async def handle_profile(request: web.Request) -> web.Response:
 
 async def handle_buy(request: web.Request) -> web.Response:
     session = _require_site_session(request)
-    tg_id = session.get("telegram_id")
-    if not tg_id:
-        return web.Response(text=_page(
-            "Ошибка",
-            "<p class='err'>Для покупки подписки привяжите Telegram-аккаунт.</p>"
-            "<a href='/bind-telegram' class='btn'>Привязать Telegram</a>",
-            session,
-        ), content_type="text/html")
+    sub_id = _sub_id(session)
     plan_id = request.match_info.get("plan_id")
     await init_db()
     plan = await get_plan(plan_id) or ALL_PLANS_BY_ID.get(plan_id)
@@ -705,7 +719,7 @@ async def handle_buy(request: web.Request) -> web.Response:
         return web.Response(text=_page("Ошибка", "<p class='err'>Тариф не найден.</p>"), status=404)
 
     if plan_id == "trial":
-        if not await claim_trial(tg_id):
+        if not await claim_trial(sub_id):
             return web.Response(text=_page("Ошибка", "<p class='err'>Вы уже использовали пробный период.</p>"))
         # пробный период — выдаём сразу без оплаты
         try:
@@ -721,14 +735,14 @@ async def handle_buy(request: web.Request) -> web.Response:
             now = int(time.time())
             expires = now + int(plan["days"]) * 86400
             pwd = await client.add_user(
-                comment=f"web:{tg_id}",
+                comment=f"web:{sub_id}",
                 expires_at=expires,
                 total_gb=int(plan.get("traffic_gb") or 0),
                 max_devices=int(plan.get("max_devices") or 1),
                 vk_hash="",
             )
             await _ensure_vk_hash(client, pwd)
-            await upsert_customer(tg_id, session.get("username"), expires, plan["id"], sid,
+            await upsert_customer(sub_id, pwd, expires, plan["id"], sid,
                                   username=session.get("username"))
             link = await client.find_link(pwd)
             await client.close()
@@ -745,9 +759,9 @@ async def handle_buy(request: web.Request) -> web.Response:
             log.exception("ошибка выдачи пробного периода через веб")
             return web.Response(text=_page("Ошибка", f"<p class='err'>Не удалось создать пробный период: {html.escape(str(e))}</p>"))
 
-    # платный тариф — создаём платёж ЮKassa
+    # платный тариф — создаём платёж ЮKassa и сразу отправляем на страницу оплаты
     try:
-        payment = await create_payment(plan, tg_id)
+        payment = await create_payment(plan, sub_id, return_url=_site_return_url())
     except Exception as e:
         log.exception("ошибка создания платежа")
         return web.Response(text=_page("Ошибка", f"<p class='err'>Не удалось создать платёж: {html.escape(str(e))}</p>"))
@@ -756,7 +770,7 @@ async def handle_buy(request: web.Request) -> web.Response:
         return web.Response(text=_page("Ошибка", "<p class='err'>ЮKassa не вернула ссылку на оплату.</p>"))
 
     await add_payment(
-        telegram_id=tg_id,
+        telegram_id=sub_id,
         username=session.get("username"),
         payment_id=payment["id"],
         plan_id=str(plan["id"]),
@@ -768,6 +782,14 @@ async def handle_pay_success(request: web.Request) -> web.Response:
     session = _get_session(request)
     payment_id = request.query.get("payment_id")
     body = "<h2>Оплата</h2>"
+    if session and not payment_id:
+        # ЮKassa не возвращает payment_id — берём последний платёж пользователя
+        try:
+            rows = await list_payments(_sub_id(session), limit=1)
+            if rows:
+                payment_id = rows[0].get("payment_id")
+        except Exception:
+            log.warning("не удалось получить последний платёж пользователя", exc_info=True)
     if payment_id:
         await init_db()
         row = await get_payment(payment_id)
