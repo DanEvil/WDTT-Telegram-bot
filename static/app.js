@@ -251,7 +251,7 @@
     if (!plansData) plansData = await api('/api/plans');
     const planActions = (p) => `
       <div class="actions">
-        <button class="btn secondary sm" onclick="pay('${p.id}','yookassa',this)">Оплатить</button>
+        <button class="btn sm" onclick="pay('${p.id}','yookassa',this)">Оплатить</button>
       </div>`;
     const plans = plansData.plans || [];
     const rows = plans.map((p) => `
