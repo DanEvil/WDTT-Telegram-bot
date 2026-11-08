@@ -83,17 +83,31 @@ def _init_data_variants(init_data: str) -> list[dict]:
 
 
 def _init_data_secrets(bot_token: str) -> list[bytes]:
-    """Ключи для расчёта подписи initData.
+    """Варианты секретного ключа для подписи initData.
 
-    Актуальная схема Telegram Mini Apps (Bot API 7.x+):
-        secret = HMAC_SHA256(bot_token, "WebAppData")
-    Старая схема (старые клиенты и Telegram Login Widget):
-        secret = SHA256(bot_token)
-    Пробуем обе — тогда приложение работает и в новых, и в старых клиентах.
+    Документация Telegram противоречива, поэтому пробуем все известные схемы:
+    1. HMAC_SHA256(key=bot_token, msg="WebAppData") — актуальный Mini Apps (core.telegram.org)
+    2. HMAC_SHA256(key="WebAppData", msg=bot_token) — вариант из docs.telegram-mini-apps.com
+    3. SHA256(bot_token) — старая схема / Telegram Login Widget
     """
-    modern = hmac.new(bot_token.encode(), b"WebAppData", hashlib.sha256).digest()
-    legacy = hashlib.sha256(bot_token.encode()).digest()
-    return [modern, legacy]
+    t = bot_token.encode()
+    return [
+        hmac.new(t, b"WebAppData", hashlib.sha256).digest(),
+        hmac.new(b"WebAppData", t, hashlib.sha256).digest(),
+        hashlib.sha256(t).digest(),
+    ]
+
+
+def _check_strings(pairs: dict, bot_token: str) -> list[str]:
+    """Варианты data-check-string.
+
+    1. Просто пары, отсортированные по ключу (классика).
+    2. С префиксом "<bot_id>:WebAppData\\n" — новый формат подписи initData
+       в свежих клиентах Telegram (Bot API 9.x+).
+    """
+    base = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
+    bot_id = bot_token.split(":", 1)[0]
+    return [base, f"{bot_id}:WebAppData\n{base}"]
 
 
 def validate_init_data(init_data: str, bot_token: str) -> dict | None:
@@ -103,22 +117,28 @@ def validate_init_data(init_data: str, bot_token: str) -> dict | None:
     received_hash = None
     calc = ""
     secrets = _init_data_secrets(bot_token)
-    for pairs in _init_data_variants(init_data):
-        received_hash = pairs.pop("hash", None)
+    matched = False
+    pairs: dict = {}
+    for variant in _init_data_variants(init_data):
+        received_hash = variant.pop("hash", None)
         if not received_hash:
             return None
         # Bot API 8.0+ добавил поле signature (Ed25519 для сторонней проверки).
         # Оно НЕ входит в data-check-string для hash, поэтому его нужно исключить,
         # иначе проверка подписи не сойдётся у современных клиентов Telegram.
-        pairs.pop("signature", None)
-        check_string = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
-        for secret in secrets:
-            calc = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
-            if hmac.compare_digest(calc, received_hash):
+        variant.pop("signature", None)
+        pairs = variant
+        for check_string in _check_strings(variant, bot_token):
+            for secret in secrets:
+                calc = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
+                if hmac.compare_digest(calc, received_hash):
+                    matched = True
+                    break
+            if matched:
                 break
-        if hmac.compare_digest(calc, received_hash):
+        if matched:
             break
-    else:
+    if not matched:
         # ни один вариант не сошёлся — логируем причину без самих данных
         _log_init_failure(init_data, received_hash, calc)
         return None
@@ -140,9 +160,9 @@ def _log_init_failure(init_data: str, received_hash: str | None, calc: str) -> N
     except Exception:
         fields = []
     log.warning(
-        "initData: подпись не сошлась (len=%s, полей=%s, есть hash=%s, есть user=%s, "
+        "initData: подпись не сошлась (len=%s, поля=%s, есть hash=%s, есть user=%s, "
         "есть signature=%s, расхождение=%s)",
-        len(init_data), len(fields), bool(received_hash),
+        len(init_data), sorted(fields), bool(received_hash),
         "user" in fields, "signature" in fields,
         "совпало" if received_hash == calc else "не совпало",
     )

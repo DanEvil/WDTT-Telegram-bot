@@ -67,6 +67,21 @@ def test_plus_in_user_json():
     assert user["id"] == 45
 
 
+def test_bot_id_prefix_schema():
+    """Новый формат подписи (Bot API 9.x+): data-check-string начинается с '<bot_id>:WebAppData\\n'."""
+    bot_id = TOKEN.split(":")[0]
+    secret = hmac.new(TOKEN.encode(), b"WebAppData", hashlib.sha256).digest()
+    pairs = {
+        "auth_date": str(int(time.time())),
+        "query_id": "AAH_prefix",
+        "user": json.dumps({"id": 48, "first_name": "New"}),
+    }
+    check = f"{bot_id}:WebAppData\n" + "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs))
+    pairs["hash"] = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+    user = validate_init_data(urlencode(pairs), TOKEN)
+    assert user is not None and user["id"] == 48, "новый формат с bot_id-префиксом не принят"
+
+
 def test_wrong_token_rejected():
     secret = hmac.new(TOKEN.encode(), b"WebAppData", hashlib.sha256).digest()
     init_data = _make_init_data({"id": 46}, secret)
