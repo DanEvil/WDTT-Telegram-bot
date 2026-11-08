@@ -92,6 +92,9 @@ PANEL_CHECK_INTERVAL = _as_int("PANEL_CHECK_INTERVAL", 60)  # сек
 
 # Метрики Prometheus
 METRICS_ENABLED = _as_bool("METRICS_ENABLED", True)
+# Если задан — /metrics требует заголовок "Authorization: Bearer <токен>".
+# Без токена метрики отдаются только с loopback (127.0.0.1/::1).
+METRICS_TOKEN = os.getenv("METRICS_TOKEN", "").strip()
 
 # Сайт K.O. Gateway (порт WEB_PORT) — отдельный HTTP-сервер, запускается ботом
 WEB_ENABLED = _as_bool("WEB_ENABLED", True)
@@ -116,7 +119,9 @@ USE_REDIS_STORAGE = _as_bool("USE_REDIS_STORAGE", False)
 # Webhook ЮKassa
 WEBHOOK_ENABLED = _as_bool("WEBHOOK_ENABLED", False)
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "0.0.0.0").strip()
-WEBHOOK_PORT = _as_int("WEBHOOK_PORT", 8080)
+# ВАЖНО: не должен совпадать с WEB_PORT (сайт), WEBAPP_PORT и HEALTH_PORT —
+# все серверы поднимаются в одном процессе на одном хосте.
+WEBHOOK_PORT = _as_int("WEBHOOK_PORT", 8090)
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/yookassa").strip()
 # Отключить IP-whitelist ЮKassa (только для локальной разработки за прокси!)
 WEBHOOK_SKIP_IP_CHECK = _as_bool("WEBHOOK_SKIP_IP_CHECK", False)
@@ -139,6 +144,18 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0").strip()
 REDIS_SUB_TTL = _as_int("REDIS_SUB_TTL", 86400 * 30)  # TTL записи в секундах (30 дней)
 
 
+def _duplicate_port_errors(ports: dict[str, int]) -> list[str]:
+    """Ошибки о совпадающих портах (все HTTP-серверы живут в одном процессе)."""
+    errors: list[str] = []
+    seen: dict[int, str] = {}
+    for name, port in ports.items():
+        if port in seen:
+            errors.append(f"{name} и {seen[port]} совпадают ({port}) — задайте разные порты")
+        else:
+            seen[port] = name
+    return errors
+
+
 def validate() -> list[str]:
     """Возвращает список ошибок конфигурации (пустой, если всё в порядке)."""
     errors = []
@@ -150,4 +167,15 @@ def validate() -> list[str]:
         errors.append("YOOKASSA_SECRET_KEY не задан")
     if not ADMIN_IDS:
         errors.append("ADMIN_IDS пуст — укажите ваш Telegram ID")
+
+    # Все HTTP-серверы поднимаются в одном процессе на одном хосте:
+    # совпадение портов = молчаливое падение одной из задач.
+    ports: dict[str, int] = {"HEALTH_PORT": HEALTH_PORT}
+    if WEB_ENABLED:
+        ports["WEB_PORT"] = WEB_PORT
+    if WEBAPP_ENABLED:
+        ports["WEBAPP_PORT"] = WEBAPP_PORT
+    if WEBHOOK_ENABLED:
+        ports["WEBHOOK_PORT"] = WEBHOOK_PORT
+    errors.extend(_duplicate_port_errors(ports))
     return errors

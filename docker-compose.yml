@@ -14,6 +14,12 @@ services:
     volumes:
       # база SQLite живёт в named-томе и переживает пересоздание контейнера
       - bot-data:/app/data
+    # Ротация логов: json-file без лимита съедал бы диск (сервер 10 ГБ)
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
 # Порт нужен ТОЛЬКО если WEBHOOK_ENABLED=true (webhook ЮKassa).
 # В network_mode: host секция ports не используется: контейнер сам слушает

@@ -67,6 +67,10 @@ def validate_init_data(init_data: str, bot_token: str) -> dict | None:
     received_hash = pairs.pop("hash", None)
     if not received_hash:
         return None
+    # Bot API 8.0+ добавляет поле signature (для сторонней валидации).
+    # Оно НЕ входит в data-check-string для hash, поэтому его нужно исключить,
+    # иначе проверка подписи не сойдётся у современных клиентов Telegram.
+    pairs.pop("signature", None)
     check_string = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
     secret = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
     calc = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
@@ -285,6 +289,7 @@ async def h_settings_get(request: web.Request) -> web.Response:
     """GET /api/v1/settings — текущие настройки автопродления + цена месяца."""
     from db import get_auto_renew_settings, get_plan
     from plans import ALL_PLANS_BY_ID
+    from payments import recurring_supported
     uid = user_id_from_request(request)
     settings = await get_auto_renew_settings(uid)
     month = await get_plan("month") or ALL_PLANS_BY_ID.get("month") or {}
@@ -294,6 +299,9 @@ async def h_settings_get(request: web.Request) -> web.Response:
         "renew_plan": month.get("name", "Month"),
         "notify_hours_options": NOTIFY_HOURS_OPTIONS,
         "brand": config.BRAND_NAME,
+        # False — магазин не поддерживает рекурренты, карта не сохранится
+        # и автопродление технически невозможно (None — ещё не проверяли)
+        "recurring_supported": recurring_supported(),
     })
     return web.json_response(settings)
 

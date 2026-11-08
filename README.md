@@ -119,13 +119,14 @@ docker compose up -d --build
 | `TRIAL_DAYS` / `TRIAL_TRAFFIC_GB` / `TRIAL_MAX_DEVICES` | параметры пробного периода (3 / 5 / 1) |
 | `REFERRAL_REWARD_*` | дневная/трафик/устройства награды рефереру |
 | `WEBHOOK_ENABLED` | `true` — принимать webhook ЮKassa |
-| `WEBHOOK_HOST` / `WEBHOOK_PORT` / `WEBHOOK_PATH` | HTTP-сервер для webhook (`/yookassa`) |
+| `WEBHOOK_HOST` / `WEBHOOK_PORT` / `WEBHOOK_PATH` | HTTP-сервер для webhook (`/yookassa`); порт по умолчанию `8090` и не должен совпадать с `WEB_PORT`/`WEBAPP_PORT`/`HEALTH_PORT` |
 | `WEBHOOK_SKIP_IP_CHECK` | `true` — отключить IP-whitelist ЮKassa (только локальная разработка!) |
 | `HEALTH_PORT` | порт healthcheck/метрик (по умолчанию `8081`) |
 | `POLL_INTERVAL` | интервал опроса платежей в секундах (пока webhook выключен) |
 | `DB_PATH` | путь к SQLite (в Docker — `/app/data/bot.db`) |
 | `LOG_FILE` | путь к файлу логов (пусто = только stdout); ротация `LOG_MAX_BYTES`/`LOG_BACKUP_COUNT` |
 | `METRICS_ENABLED` | `true` — эндпоинт `/metrics` в формате Prometheus на `HEALTH_PORT` |
+| `METRICS_TOKEN` | если задан — `/metrics` требует `Authorization: Bearer <токен>`; без токена метрики отдаются только с localhost |
 | `PANEL_CHECK_INTERVAL` | интервал проверки доступности панелей, сек (60) |
 | `PANEL_FAIL_ALERT_THRESHOLD` | сколько неудач подряд → алерт админам (3) |
 | `SUB_DOMAIN` / `SUB_PATH` | единый домен подписки (Subscription Proxy через nginx+Lua+Redis) |

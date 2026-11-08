@@ -84,9 +84,26 @@
 
   function linkBlock(label, url) {
     return `<div class="card"><h3>${esc(label)}</h3>
-      <div class="link-box"><span class="link-text">${esc(url)}</span><span class="copy" onclick="copyLink('${esc(url).replace(/'/g, "\\'")}')">копировать</span></div></div>`;
+      <div class="link-box"><span class="link-text">${esc(url)}</span><span class="copy" data-copy="${esc(url)}">копировать</span></div></div>`;
   }
   window.copyLink = copy;
+
+  // Данные с сервера НЕ подставляем внутрь inline-JS: кавычка в URL/plan_id
+  // ломала JS-строку и давала XSS. Значения лежат в data-атрибутах,
+  // а клики обрабатываются делегированием.
+  document.addEventListener('click', (e) => {
+    const copyEl = e.target.closest('[data-copy]');
+    if (copyEl) {
+      e.preventDefault();
+      copy(copyEl.dataset.copy);
+      return;
+    }
+    const payEl = e.target.closest('[data-pay]');
+    if (payEl) {
+      e.preventDefault();
+      window.pay(payEl.dataset.pay, payEl.dataset.method || 'yookassa', payEl);
+    }
+  });
 
   // ---------- views ----------
 
@@ -156,15 +173,25 @@
     const s = settingsData;
     const opts = (s.notify_hours_options || [0, 1, 3, 6, 12, 24, 48]).map(h =>
       `<option value="${h}"${h === s.notify_hours ? ' selected' : ''}>${h === 0 ? 'Не уведомлять' : `За ${h} ч.`}</option>`).join('');
+    // рекурренты выключены в магазине ЮKassa -> карта не сохранится, автопродление невозможно
+    const noRecurring = s.recurring_supported === false;
+    const renewNote = noRecurring
+      ? `<div class="note" style="margin-top:8px;color:var(--err)">
+           ⚠️ Автопродление сейчас недоступно: платёжный шлюз не поддерживает повторные списания
+           для этого магазина, карта не сохраняется. Оплата и продление вручную работают.
+         </div>`
+      : (s.auto_renew && !s.has_payment_method
+          ? '<div class="note" style="margin-top:8px;color:var(--warn)">⚠️ Сначала оплатите любой тариф картой через ЮKassa — карта сохранится для автопродления.</div>'
+          : '');
     return headHtml('Настройки', 'Автопродление подписки') +
       `<div class="card">
         <h3>🔄 Автопродление</h3>
-        <label class="check"><input type="checkbox" id="auto_renew"${s.auto_renew ? ' checked' : ''}>
+        <label class="check"><input type="checkbox" id="auto_renew"${s.auto_renew ? ' checked' : ''}${noRecurring ? ' disabled' : ''}>
           <span class="check-text">Автоматически продлевать подписку на <b>1 месяц</b> (30 дней) — списываем ${s.renew_price} ₽ с сохранённой карты</span></label>
-        ${s.auto_renew && !s.has_payment_method ? '<div class="note" style="margin-top:8px;color:var(--warn)">⚠️ Сначала оплатите любой тариф картой через ЮKassa — карта сохранится для автопродления.</div>' : ''}
+        ${renewNote}
         <h3 style="margin-top:16px">🔔 Уведомление о списании</h3>
         <label class="check"><input type="checkbox" id="notify_on"${s.notify_hours > 0 ? ' checked' : ''}>
-          <span class="check-text">Уведомлять о списании средств</span></label>
+          <span class="check-text">Уведомлять меня о списании средств</span></label>
         <select id="notify_hours" ${s.notify_hours > 0 ? '' : 'disabled'}>${opts}</select>
         <button class="btn" style="margin-top:16px" onclick="saveSettings(this)">Сохранить</button>
       </div>
@@ -251,7 +278,7 @@
     if (!plansData) plansData = await api('/api/plans');
     const planActions = (p) => `
       <div class="actions">
-        <button class="btn sm" onclick="pay('${p.id}','yookassa',this)">Оплатить</button>
+        <button class="btn sm" data-pay="${esc(p.id)}" data-method="yookassa">Оплатить</button>
       </div>`;
     const plans = plansData.plans || [];
     const rows = plans.map((p) => `
@@ -284,7 +311,7 @@
     return headHtml('Реферальная программа', `+${r.reward_days} дн. за приглашённого`) +
       `<div class="card">
         <h3>Ваша ссылка</h3>
-        <div class="link-box"><span class="link-text">${esc(r.link)}</span><span class="copy" onclick="copyLink('${esc(r.link).replace(/'/g, "\\'")}')">копировать</span></div>
+        <div class="link-box"><span class="link-text">${esc(r.link)}</span><span class="copy" data-copy="${esc(r.link)}">копировать</span></div>
         <div class="row"><span class="k">Приглашено</span><span class="v">${r.count}</span></div>
         <button class="btn" style="margin-top:12px" onclick="shareRef()">📤 Отправить приглашение</button>
         <button class="btn secondary" onclick="copyLink(lastRefLink)">📋 Скопировать ссылку</button>

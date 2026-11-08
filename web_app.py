@@ -42,7 +42,7 @@ from config import (
 )
 from db import (
     conn as db_conn, init_db, get_customer, upsert_customer,
-    add_payment, get_payment, list_payments, set_payment_status, get_plan, list_plans,
+    add_payment, get_payment, list_payments, get_plan, list_plans,
     claim_trial, list_servers, stats, get_server,
     get_referrals_count, get_site_user_by_email,
     generate_referral_code, add_site_referral, get_site_referrals_count,
@@ -746,16 +746,27 @@ async def handle_profile(request: web.Request) -> web.Response:
             f"{'Не уведомлять' if h == 0 else f'За {h} ч.'}</option>"
             for h in (0, 1, 3, 6, 12, 24, 48)
         )
+        # магазин ЮKassa без рекуррентов -> карта не сохранится, автопродление невозможно
+        from payments import recurring_supported
+        no_recurring = recurring_supported() is False
+        renew_note = (
+            "<p style='color:var(--err);font-size:.85rem'>⚠️ Автопродление сейчас недоступно: "
+            "платёжный шлюз не поддерживает повторные списания для этого магазина, карта не сохраняется. "
+            "Оплата и продление вручную работают.</p>"
+            if no_recurring else
+            ("<p style='color:var(--warn);font-size:.85rem'>⚠️ Сначала оплатите любой тариф картой через ЮKassa — карта сохранится для автопродления.</p>"
+             if (ar['auto_renew'] and not ar['has_payment_method']) else '')
+        )
         body += f"""
     <div class="card" id="settings">
       <h3>🔄 Автопродление подписки</h3>
       <form method="post" action="/settings">
         <label class="check">
-          <input type="checkbox" name="auto_renew" value="1"{' checked' if ar['auto_renew'] else ''}>
+          <input type="checkbox" name="auto_renew" value="1"{' checked' if ar['auto_renew'] else ''}{' disabled' if no_recurring else ''}>
           <span>Автоматически продлевать подписку на <b>1 месяц (30 дней)</b> —
             при окончании спишем <b>{month_price} ₽</b> с сохранённой карты ЮKassa.</span>
         </label>
-        {"<p style='color:var(--err);font-size:.85rem'>⚠️ Сначала оплатите любой тариф картой через ЮKassa — карта сохранится для автопродления.</p>" if (ar['auto_renew'] and not ar['has_payment_method']) else ''}
+        {renew_note}
         <h4 style="margin-top:1rem">🔔 Уведомление о списании</h4>
         <label class="check">
           <input type="checkbox" id="notify_on" name="notify_on" value="1"{' checked' if ar['notify_hours'] > 0 else ''}
@@ -915,14 +926,19 @@ async def handle_pay_success(request: web.Request) -> web.Response:
                 payment_id = rows[0].get("payment_id")
         except Exception:
             log.warning("не удалось получить последний платёж пользователя", exc_info=True)
-    if payment_id:
+    if payment_id and session:
         await init_db()
         row = await get_payment(payment_id)
-        if row:
+        # платёж должен принадлежать текущему пользователю (иначе можно
+        # «сжечь» чужой платёж, не выдав по нему доступ)
+        if row and int(row.get("telegram_id") or 0) == _sub_id(session):
             try:
-                yk = await fetch_payment(payment_id)
-                if yk and yk["status"] == "succeeded":
-                    await set_payment_status(payment_id, "fulfilled")
+                # ВАЖНО: не помечаем платёж fulfilled вручную — статус
+                # выставляет fulfill_payment после фактической выдачи доступа
+                from bot import fulfill_payment
+                await fulfill_payment(payment_id)
+                row = await get_payment(payment_id) or row
+                if row.get("status") == "fulfilled":
                     body += "<p class='ok'>Оплата подтверждена. Подписка активирована (или продлена).</p>"
                 else:
                     body += "<p>Оплата ещё не поступила. Проверьте статус через минуту.</p>"
@@ -1067,6 +1083,11 @@ async def handle_settings_post(request: web.Request) -> web.Response:
     if not tg_id:
         raise web.HTTPFound("/bind-telegram")
     data = await request.post()
+    # если магазин не поддерживает рекурренты — автопродление технически невозможно,
+    # не даём включить его даже в обход UI
+    from payments import recurring_supported
+    if recurring_supported() is False:
+        raise web.HTTPFound("/profile#settings")
     auto_renew = data.get("auto_renew") == "1"
     notify_on = data.get("notify_on") == "1"
     try:
@@ -1211,10 +1232,24 @@ async def api_check_payment(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=502)
 
     status = yk.get("status", "pending") if isinstance(yk, dict) else "pending"
-    if status == "succeeded":
-        await set_payment_status(payment_id, "fulfilled")
+    granted = (row.get("status") or "") == "fulfilled"
+    if status == "succeeded" and not granted:
+        # Выдаём доступ через общий fulfillment (он сам проверит платёж и
+        # запишет fulfilled). Раньше здесь статус ставился вручную, из-за чего
+        # платёж «сгорал» без выдачи подписки.
+        try:
+            from bot import fulfill_payment
+            await fulfill_payment(payment_id)
+            fresh = await get_payment(payment_id) or row
+            granted = (fresh.get("status") or "") == "fulfilled"
+        except Exception:
+            log.exception("api_check_payment: fulfillment %s", payment_id)
 
-    return web.json_response({"status": status, "payment_id": payment_id})
+    return web.json_response({
+        "status": status,
+        "payment_id": payment_id,
+        "granted": granted,
+    })
 
 # ---------- реферальная ссылка сайта ----------
 

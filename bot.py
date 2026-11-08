@@ -410,6 +410,16 @@ def _comment_for(telegram_id: int, username: str | None) -> str:
     return f"tg:{telegram_id}" + (f" @{username}" if username else "")
 
 
+def _panel_user_missing(exc: Exception) -> bool:
+    """Ошибка панели означает, что пользователь в ней именно отсутствует.
+
+    Создавать новый ключ можно только в этом случае: при таймауте/500/битом
+    ответе старый ключ жив, и дубль приведёт к двум активным подпискам.
+    """
+    msg = str(exc).lower()
+    return "not found" in msg or "не найден" in msg
+
+
 async def grant_access(telegram_id: int, username: str | None, plan: dict) -> tuple[WdttClient, str, int]:
     """Создаёт или продлевает подписку. Возвращает (клиент панели, пароль, expires_at).
 
@@ -466,7 +476,12 @@ async def grant_access(telegram_id: int, username: str | None, plan: dict) -> tu
             # продление: sub_id не меняется
             await upsert_customer(telegram_id, pwd, expires, plan["id"], server_id, username=username, sub_id=customer.get("sub_id"))
         except WdttError as e:
-            log.warning("Продление tg %s не удалось (%s), создаём новый ключ", telegram_id, e)
+            if not _panel_user_missing(e):
+                # панель недоступна или вернула иную ошибку: ключ мог остаться
+                # рабочим, поэтому новый НЕ создаём — платёж останется paid и
+                # выдача повторится автоматически
+                raise
+            log.warning("Ключ tg %s отсутствует в панели (%s), создаём новый", telegram_id, e)
             pwd = await client.add_user(comment=_comment_for(telegram_id, username),
                                         expires_at=expires, total_gb=traffic, max_devices=devices,
                                         vk_hash=config.WDTT_VK_HASH)
@@ -534,6 +549,12 @@ async def migrate_sub_ids() -> None:
     log.info("migrate_sub_ids: миграция завершена")
 
 
+# Панель хранит cookies только одного VK-профиля (vk_cookies, id=1). Смена
+# cookies и создание вызова обязаны быть атомарными: иначе параллельная выдача
+# перетрёт cookies, и хеш будет выдан не тому VK-аккаунту, который посчитан.
+_vk_cookies_lock = asyncio.Lock()
+
+
 async def _pick_vk_account(server_id: int | None) -> dict | None:
     """VK-аккаунт с наименьшим числом выданных хешей (по серверу, при равенстве — всего).
 
@@ -562,8 +583,9 @@ async def _create_vk_hash_rotated(client: WdttClient, server_id: int, pwd: str) 
     if not account:
         return None
     try:
-        await client.set_vk_cookies(account["cookies"])
-        vk_hash = await client.create_vk_call(pwd)
+        async with _vk_cookies_lock:
+            await client.set_vk_cookies(account["cookies"])
+            vk_hash = await client.create_vk_call(pwd)
         for piece in WdttClient._clean_hash_pieces(vk_hash):
             await record_vk_issued(server_id, account["id"], pwd, piece)
         return vk_hash
@@ -1270,7 +1292,11 @@ async def nav_trial(message: Message) -> None:
     )
 
 
-@router.message((F.text.startswith("💳 ") | F.text.startswith("➕ ")), StateFilter(None))
+@router.message(
+    (F.text.startswith("💳 ") | F.text.startswith("➕ "))
+    & ~F.text.in_(ADMIN_NAV_BUTTONS),
+    StateFilter(None),
+)
 async def nav_plan(message: Message) -> None:
     plan_id = PLAN_BUTTONS.get(message.text or "")
     plan = await get_plan(plan_id) if plan_id else None
@@ -2565,13 +2591,36 @@ async def send_traffic_warnings() -> int:
     return sent
 
 
+# Льготный период после окончания подписки для клиентов с автопродлением:
+# ключ нельзя удалять сразу, иначе воркер автопродления не сможет списать
+# деньги и продлить подписку (он ищет customers.wdtt_password IS NOT NULL).
+AUTORENEW_GRACE_SECONDS = 3 * 86400
+
+
+def _expired_key_cleanup_due(c: dict, now: int) -> bool:
+    """Можно ли уже удалять ключ истёкшего клиента.
+
+    Клиентам с автопродлением и сохранённой картой даём льготный период:
+    иначе ключ удаляется раньше, чем autorenew_worker успеет списать деньги.
+    """
+    exp = int(c.get("expires_at") or 0)
+    if c.get("auto_renew") and c.get("payment_method_id"):
+        if now - exp < AUTORENEW_GRACE_SECONDS:
+            return False
+    return True
+
+
 async def expiry_worker() -> None:
     """Раз в час отправляет напоминания и удаляет истёкшие ключи."""
     while True:
         try:
             await send_expiry_reminders()
             await send_traffic_warnings()
+            now = int(time.time())
             for c in await get_expired_customers():
+                if not _expired_key_cleanup_due(c, now):
+                    # даём autorenew_worker шанс списать и продлить
+                    continue
                 cleared = False
                 try:
                     client = await get_client(c["server_id"])
@@ -2589,8 +2638,18 @@ async def expiry_worker() -> None:
                     except Exception:
                         pass
         except Exception:
-                    log.exception("expiry loop")
+            log.exception("expiry loop")
         await asyncio.sleep(3600)
+
+
+def _panel_expiry_changed(local_expires: int, panel_expires: int) -> bool:
+    """Нужно ли обновлять локальную запись по данным панели.
+
+    customers не хранит total_gb/max_devices/vk_hash — эти поля живут только
+    в панели, сравнивать их не с чем. Единственное синхронизируемое поле —
+    expires_at (админ мог продлить/сократить срок вручную).
+    """
+    return bool(panel_expires) and int(panel_expires) != int(local_expires)
 
 
 async def sync_panel_worker() -> None:
@@ -2623,34 +2682,21 @@ async def sync_panel_worker() -> None:
                     if not cust:
                         continue  # пользователь создан не через бота — игнорируем
 
-                    # обновляем локальную запись данными из панели
                     panel_expires = int(u.get("expires_at") or 0)
-                    panel_total_gb = int(u.get("total_gb") or 0)
-                    panel_max_dev = int(u.get("max_devices") or 1)
-                    panel_vk_hash = str(u.get("vk_hash") or "").strip()
+                    local_expires = int(cust.get("expires_at") or 0)
+                    if not _panel_expiry_changed(local_expires, panel_expires):
+                        continue
 
-                    need_update = False
-                    if panel_expires and panel_expires != int(cust.get("expires_at") or 0):
-                        need_update = True
-                    if panel_total_gb != int(cust.get("traffic_gb") or 0):
-                        # traffic_gb не хранится в customers — берём из тарифа, но синхронизируем план
-                        pass
-                    if panel_max_dev:
-                        need_update = True
-                    if panel_vk_hash:
-                        need_update = True
-
-                    if need_update:
-                        await upsert_customer(
-                            cust["telegram_id"],
-                            pwd,
-                            panel_expires or int(cust.get("expires_at") or 0),
-                            cust.get("plan_id"),
-                            cust.get("server_id"),
-                            username=cust.get("username"),
-                        )
-                        log.info("sync panel: tg %s обновлён из панели (exp=%s, dev=%s)",
-                                 cust["telegram_id"], panel_expires, panel_max_dev)
+                    await upsert_customer(
+                        cust["telegram_id"],
+                        pwd,
+                        panel_expires,
+                        cust.get("plan_id"),
+                        cust.get("server_id"),
+                        username=cust.get("username"),
+                    )
+                    log.info("sync panel: tg %s обновлён из панели (exp=%s)",
+                             cust["telegram_id"], panel_expires)
 
         except Exception:
             log.exception("sync panel loop")
@@ -2682,6 +2728,17 @@ async def run_webhook() -> None:
              "off" if config.WEBHOOK_SKIP_IP_CHECK else "on")
 
 
+def _metrics_allowed(remote: str | None, authorization: str | None, token: str) -> bool:
+    """Доступ к /metrics: токен, а без него — только с loopback.
+
+    Метрики содержат число клиентов/платежей и латентность панели — не стоит
+    отдавать их всему интернету на публичном HEALTH_PORT.
+    """
+    if token:
+        return (authorization or "") == f"Bearer {token}"
+    return (remote or "") in {"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"}
+
+
 async def run_healthcheck() -> None:
     """Healthcheck + метрики Prometheus на одном порту."""
     from aiohttp import web
@@ -2691,6 +2748,12 @@ async def run_healthcheck() -> None:
         return web.json_response({"status": "ok", "bot": bot_username or "starting"})
 
     async def metrics_endpoint(request: web.Request) -> web.Response:
+        if not _metrics_allowed(
+            request.remote,
+            request.headers.get("Authorization"),
+            config.METRICS_TOKEN,
+        ):
+            return web.Response(status=403, text="forbidden\n")
         return web.Response(text=m.render(), content_type="text/plain; version=0.0.4")
 
     app = web.Application()
@@ -2735,6 +2798,43 @@ async def backup_worker() -> None:
             raise
         except Exception:
             log.exception("backup_worker")
+
+
+async def _probe_recurring_worker() -> None:
+    """При старте проверяет, поддерживает ли магазин ЮKassa рекуррентные платежи.
+
+    Пока не поддерживает — автопродление невозможно (карта не сохраняется),
+    и интерфейс честно предупреждает об этом.
+    """
+    try:
+        from payments import probe_recurring_support
+        supported = await probe_recurring_support()
+        if supported is False:
+            log.warning(
+                "ЮKassa: магазин не поддерживает рекуррентные платежи — "
+                "автопродление сейчас недоступно, автопродление включится "
+                "после подключения рекуррентов в личном кабинете ЮKassa"
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("probe_recurring")
+
+
+async def janitor_worker() -> None:
+    """Периодически чистит временные записи: запросы на вход, старые сессии сайта."""
+    interval = 600  # каждые 10 минут
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            from db import cleanup_login_requests
+            removed = await cleanup_login_requests(max_age=3600)
+            if removed:
+                log.info("janitor: удалено старых запросов на вход: %s", removed)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("janitor_worker")
 
 
 # ---------- мониторинг панели ----------
@@ -2885,7 +2985,9 @@ async def main() -> None:
         asyncio.create_task(autorenew_worker()),
         asyncio.create_task(run_healthcheck()),
         asyncio.create_task(backup_worker()),
+        asyncio.create_task(janitor_worker()),
         asyncio.create_task(panel_health_worker()),
+        asyncio.create_task(_probe_recurring_worker()),
     ]
     if config.SUB_DOMAIN and redis_client:
         bg_tasks.append(asyncio.create_task(sync_panel_worker()))

@@ -13,6 +13,11 @@ async def conn():
     db = await aiosqlite.connect(DB_PATH)
     db.row_factory = aiosqlite.Row
     try:
+        # Все запросы открывают своё соединение: без busy_timeout параллельная
+        # запись падает с "database is locked", а NORMAL в WAL-режиме заметно
+        # быстрее FULL и не приводит к порче БД.
+        await db.execute("PRAGMA busy_timeout=5000")
+        await db.execute("PRAGMA synchronous=NORMAL")
         yield db
         await db.commit()
     finally:
@@ -21,6 +26,9 @@ async def conn():
 
 async def init_db() -> None:
     async with conn() as db:
+        # WAL: чтение не блокирует запись (важно при фоновых воркерах).
+        # Режим хранится в файле БД, поэтому достаточно выставить один раз.
+        await db.execute("PRAGMA journal_mode=WAL")
         await db.executescript(
             """
             CREATE TABLE IF NOT EXISTS customers (
@@ -160,6 +168,11 @@ async def init_db() -> None:
         # Индексы для быстрого поиска (sync_panel_worker, sub_id lookups)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_customers_wdtt_password ON customers(wdtt_password)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_customers_sub_id ON customers(sub_id)")
+        # Воркеры напоминаний/истечения и автопродления фильтруют по expires_at
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_customers_expires ON customers(expires_at)")
+        # Личные кабинеты и webhook часто выбирают платежи по пользователю/статусу
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_payments_telegram ON payments(telegram_id, created_at)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status, created_at)")
 
         # Таблицы сайта (личный кабинет): аккаунты и коды привязки Telegram
         await db.executescript(
@@ -296,8 +309,19 @@ async def upsert_customer(telegram_id: int, wdtt_password: str, expires_at: int,
                 plan_id       = excluded.plan_id,
                 server_id     = excluded.server_id,
                 sub_id        = COALESCE(excluded.sub_id, customers.sub_id),
-                reminder_sent = 0,
-                traffic_notified = 0
+                -- Сбрасываем метки напоминаний только при реальной смене срока
+                -- или тарифа (продление/новый ключ). Иначе sync_panel_worker,
+                -- вызываемый каждый час, стирал бы их и напоминания не уходили.
+                reminder_sent = CASE
+                    WHEN customers.expires_at = excluded.expires_at
+                     AND COALESCE(customers.plan_id, '') = COALESCE(excluded.plan_id, '')
+                    THEN customers.reminder_sent
+                    ELSE 0 END,
+                traffic_notified = CASE
+                    WHEN customers.expires_at = excluded.expires_at
+                     AND COALESCE(customers.plan_id, '') = COALESCE(excluded.plan_id, '')
+                    THEN customers.traffic_notified
+                    ELSE 0 END
             """,
             (telegram_id, username, wdtt_password, expires_at, plan_id, server_id, sub_id, int(time.time())),
         )
@@ -803,6 +827,20 @@ async def get_login_request(code: str) -> dict | None:
 async def mark_login_request_used(code: str) -> None:
     async with conn() as db:
         await db.execute("UPDATE login_requests SET used = 1 WHERE code = ?", (code,))
+
+
+async def cleanup_login_requests(max_age: int = 3600) -> int:
+    """Удаляет старые и использованные запросы на вход.
+
+    Сканеры/боты могут дёргать /login/telegram тысячи раз — без очистки
+    таблица login_requests растёт бесконечно.
+    """
+    cutoff = int(time.time()) - int(max_age)
+    async with conn() as db:
+        cur = await db.execute(
+            "DELETE FROM login_requests WHERE created_at < ? OR used = 1", (cutoff,)
+        )
+        return cur.rowcount or 0
 
 
 # ---------- plans ----------

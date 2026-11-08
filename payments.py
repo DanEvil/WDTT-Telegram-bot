@@ -16,6 +16,69 @@ from config import RETURN_URL, YOOKASSA_SECRET_KEY, YOOKASSA_SHOP_ID
 
 log = logging.getLogger(__name__)
 
+# Состояние магазина по рекуррентным платежам. None = неизвестно, True/False — известно.
+# ЮKassa отвечает 403 "This store can't make recurring payments", если магазин
+# не включил рекурренты — тогда карта не сохраняется и автопродление невозможно.
+_recurring_supported: bool | None = None
+
+
+def recurring_supported() -> bool | None:
+    """Поддерживает ли магазин рекуррентные платежи (None — ещё не проверяли)."""
+    return _recurring_supported
+
+
+def _set_recurring_supported(value: bool) -> None:
+    global _recurring_supported
+    if _recurring_supported != value:
+        _recurring_supported = value
+        log.info("ЮKassa: рекуррентные платежи %s",
+                 "поддерживаются" if value else "не поддерживаются магазином")
+
+
+async def probe_recurring_support() -> bool | None:
+    """Проверяет поддержку рекуррентных платежей магазином ЮKassa.
+
+    Если магазин их не поддерживает — API отвечает 403 и платёж НЕ создаётся
+    (никакого мусора в ЛК). Если поддерживает — создаём тестовый платёж на 1 ₽
+    и сразу отменяем его.
+    """
+    global _recurring_supported
+    if _recurring_supported is not None:
+        return _recurring_supported
+    payload = {
+        "amount": {"value": "1.00", "currency": "RUB"},
+        "confirmation": {"type": "redirect", "return_url": RETURN_URL},
+        "capture": True,
+        "description": "K.O. Gateway — проверка автопродления",
+        "metadata": {"telegram_id": "0", "plan_id": "recurring_probe"},
+        "save_payment_method": True,
+    }
+    http = await get_http_client()
+    try:
+        r = await http.post(
+            f"{API_URL}/payments",
+            json=payload,
+            headers={"Idempotence-Key": str(uuid4())},
+        )
+    except Exception as e:
+        log.warning("ЮKassa: не удалось проверить рекуррентные платежи: %s", e)
+        return None
+    if r.status_code == 403 and "recurring" in (r.text or "").lower():
+        _set_recurring_supported(False)
+        return False
+    if r.status_code < 400:
+        _set_recurring_supported(True)
+        # гасим тестовый платёж, чтобы не оставлять мусор в ЛК
+        try:
+            pid = (r.json() or {}).get("id")
+            if pid:
+                await http.post(f"{API_URL}/payments/{pid}/cancel", json={})
+        except Exception:
+            log.warning("ЮKassa: не удалось отменить тестовый платёж проверки", exc_info=True)
+        return True
+    log.warning("ЮKassa: проверка рекуррентов вернула HTTP %s", r.status_code)
+    return None
+
 API_URL = "https://api.yookassa.ru/v3"
 
 # Общий HTTP-клиент (пул соединений) — создаётся один раз, переиспользуется
@@ -80,6 +143,7 @@ async def create_payment(plan: dict, telegram_id: int, save_payment_method: bool
     )
     if r.status_code == 403 and save_payment_method and "recurring" in (r.text or "").lower():
         # магазин не поддерживает рекуррентные платежи — платим без сохранения карты
+        _set_recurring_supported(False)
         log.warning(
             "ЮKassa: магазин не поддерживает рекуррентные платежи (403), "
             "платёж создаётся без сохранения карты — автопродление недоступно"
@@ -90,6 +154,9 @@ async def create_payment(plan: dict, telegram_id: int, save_payment_method: bool
             json=payload,
             headers={"Idempotence-Key": str(uuid4())},
         )
+    elif r.status_code < 400 and save_payment_method:
+        # магазин принял save_payment_method — рекурренты работают
+        _set_recurring_supported(True)
     if r.status_code >= 400:
         # ЮKassa возвращает описание ошибки в JSON: description + parameterViolations
         try:

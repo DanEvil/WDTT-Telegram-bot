@@ -112,7 +112,7 @@ run_settings_wizard() {
     wdtt_user=$(wt_input "WDTT_USERNAME — логин панели:" "$(def x WDTT_USERNAME)" 1 0)
     wdtt_pass=$(wt_input "WDTT_PASSWORD — пароль панели:" "$(def x WDTT_PASSWORD)" 1 1)
     webhook_enabled=$(wt_input "WEBHOOK_ENABLED — платить через webhook? false/true:" "$(def x WEBHOOK_ENABLED false)" 1 0)
-    webhook_port=$(wt_input "WEBHOOK_PORT — порт webhook (нужно только при true):" "$(def x WEBHOOK_PORT 8080)" 0 0)
+    webhook_port=$(wt_input "WEBHOOK_PORT — порт webhook (нужно только при true, не 8080/8081/8082):" "$(def x WEBHOOK_PORT 8090)" 0 0)
 
     local summary
     summary=$'Проверьте введённые данные:\n'
