@@ -225,36 +225,7 @@ _FAVICON = (
 )
 
 def _page(title: str, body: str, session: dict | None = None, active: str = "") -> str:
-    if session:
-        who = session.get("username") or session.get("email") or "Профиль"
-        auth = (
-            f"<div class='user'>Вход как <b>{html.escape(str(who))}</b> "
-            f"| <a href='/logout'>Выход</a></div>"
-        )
-    else:
-        tg_login = (
-            "<a class='tg-login-link' href='/login/telegram'>🔐 Войти через Telegram</a> | "
-            if BOT_USERNAME else ""
-        )
-        auth = (
-            f"<div class='user'>{tg_login}"
-            "<a href='/login'>Войти</a> | <a href='/register'>Регистрация</a></div>"
-        )
-
-    nav = ""
-    if session and session.get("telegram_id") and _is_admin(session["telegram_id"]):
-        nav += "<a href='/admin'>Админ-панель</a>"
-
-    def navlink(href: str, label: str) -> str:
-        cls = " class='active'" if active == label else ""
-        return f"<a href='{href}'{cls}>{label}</a>"
-
-    nav_html = (
-        navlink("/", "Главная")
-        + navlink("/instruction", "Инструкция")
-        + navlink("/profile", "Профиль")
-        + nav
-    )
+    # Шапка сайта минимальна: только бренд K.O. Gateway и кнопка «Бот в Telegram».
     tg_btn = (
         f"<a class='tg-btn' href='{_bot_link()}' target='_blank' rel='noopener'>"
         f"<svg class='tg-ico' viewBox='0 0 24 24' aria-hidden='true'><path fill='currentColor' d="
@@ -279,9 +250,8 @@ def _page(title: str, body: str, session: dict | None = None, active: str = "") 
 <a class="skip-link" href="#main">Перейти к содержимому</a>
 <header class="topbar">
   <div class="brand">{_brand_html()}</div>
-  <div class="topbar-right">{tg_btn}{auth}</div>
+  <div class="topbar-right">{tg_btn}</div>
 </header>
-<nav class="nav">{nav_html}</nav>
 <main id="main">
 <h1 class="page-title">{html.escape(title)}</h1>
 {body}
