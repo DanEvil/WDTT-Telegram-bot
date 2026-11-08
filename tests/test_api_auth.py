@@ -95,9 +95,13 @@ async def test_init_data_rejects_bad_signature():
 
 
 def _make_init_data(fields: dict, token: str, signature: str | None = "sig") -> str:
-    """Собирает initData так, как это делает Telegram (Bot API 8.0+)."""
+    """Собирает initData так, как это делает Telegram (Bot API 8.0+).
+
+    Схема Mini Apps: secret = HMAC_SHA256(bot_token, "WebAppData"),
+    хеш считается по полям БЕЗ hash и signature.
+    """
     check_string = "\n".join(f"{k}={v}" for k, v in sorted(fields.items()))
-    secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
+    secret = hmac.new(token.encode(), b"WebAppData", hashlib.sha256).digest()
     digest = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
     params = {**fields, "hash": digest}
     if signature is not None:

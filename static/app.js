@@ -1,7 +1,9 @@
 /* WDTT Mini App — SPA на Telegram WebApp API */
 (function () {
   'use strict';
-  const tg = window.Telegram && window.Telegram.WebApp;
+  // Telegram WebApp SDK может появиться/наполниться с задержкой (особенно при
+  // открытии из меню чатов), поэтому tg — переменная, а не константа.
+  let tg = window.Telegram && window.Telegram.WebApp;
   if (tg) { tg.ready(); tg.expand(); }
 
   const app = document.getElementById('app');
@@ -34,7 +36,28 @@
     return data;
   }
 
-  async function auth() {
+  // Ждём, пока Telegram инициализирует WebApp и отдаст initData.
+  // При открытии из меню чатов (Web App shortcut) данные могут прийти
+  // на 0.5–2 секунды позже, чем появится сам SDK.
+  function waitForInitData(timeoutMs) {
+    return new Promise((resolve) => {
+      const started = Date.now();
+      (function check() {
+        // SDK мог подгрузиться позже — обновляем ссылку и просим Telegram
+        // отдать данные о пользователе.
+        if (!tg && window.Telegram && window.Telegram.WebApp) {
+          tg = window.Telegram.WebApp;
+          try { tg.ready(); tg.expand(); } catch (_) { /* ignore */ }
+        }
+        if (tg && tg.initData) return resolve(tg.initData);
+        if (Date.now() - started >= timeoutMs) return resolve('');
+        setTimeout(check, 150);
+      })();
+    });
+  }
+
+  async function auth(attempt) {
+    attempt = attempt || 0;
     const initData = tg ? tg.initData : '';
     const data = await api('/api/auth', { method: 'POST', body: JSON.stringify({ initData }) });
     token = data.token;
@@ -429,15 +452,16 @@
     // Скелетоны на время загрузки данных
     app.innerHTML = skeletonHtml();
     renderNav();
-    // Приложение вне Telegram: initData пуст, авторизация невозможна —
-    // показываем понятную инструкцию вместо технической ошибки «bad initData».
-    if (!tg || !tg.initData) {
+    // Ждём initData: при открытии из меню чатов Telegram отдаёт его
+    // с небольшой задержкой — авторизация должна пройти автоматически.
+    const initData = await waitForInitData(4000);
+    if (!initData) {
       const bot = window.__botUrl || 'https://t.me/KO_Gateway_bot';
       const site = window.__siteUrl || '';
       app.innerHTML = `<div class="view-enter"><div class="card">
         <div class="hero-title">Откройте приложение в Telegram</div>
         <div class="hero-sub" style="color:var(--hint)">Это приложение работает только внутри Telegram:
-          нажмите кнопку «Открыть приложение» в боте — здесь появятся подписка,
+          нажмите кнопку «Открыть приложение» в боте или в меню чатов — здесь появятся подписка,
           ссылки для подключения и настройки.</div>
         <p style="margin-top:1.2rem"><a class="btn" href="${esc(bot)}" target="_blank" rel="noopener">Открыть бота в Telegram</a></p>
         ${site ? `<p><a class="btn secondary" href="${esc(site)}" target="_blank" rel="noopener">🌐 Сайт K.O. Gateway</a></p>` : ''}
@@ -450,11 +474,24 @@
       me = await api('/api/me');
       render();
     } catch (e) {
+      // Временная ошибка (сеть/5xx) — пробуем ещё пару раз автоматически.
+      const transient = /HTTP 5|network|timeout|Failed to fetch/i.test(String(e && e.message));
+      if (transient) {
+        for (let i = 0; i < 2; i++) {
+          await new Promise((r) => setTimeout(r, 800 * (i + 1)));
+          try {
+            await auth();
+            me = await api('/api/me');
+            render();
+            return;
+          } catch (_) { /* повторяем */ }
+        }
+      }
       const bot = window.__botUrl || 'https://t.me/KO_Gateway_bot';
       app.innerHTML = `<div class="view-enter"><div class="card">
         <div class="hero-title">Не удалось авторизоваться</div>
         <div class="hero-sub" style="color:var(--hint)">${esc(e.message)}</div>
-        <p class="note">Откройте приложение через кнопку в боте.</p>
+        <p class="note">Откройте приложение через кнопку в боте или через меню чатов.</p>
         <p><a class="btn" href="${esc(bot)}" target="_blank" rel="noopener">Открыть бота в Telegram</a></p>
         <button class="btn secondary" onclick="location.reload()">🔄 Повторить</button></div></div>`;
       renderNav();

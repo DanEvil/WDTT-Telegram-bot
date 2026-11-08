@@ -82,24 +82,40 @@ def _init_data_variants(init_data: str) -> list[dict]:
     return variants
 
 
+def _init_data_secrets(bot_token: str) -> list[bytes]:
+    """Ключи для расчёта подписи initData.
+
+    Актуальная схема Telegram Mini Apps (Bot API 7.x+):
+        secret = HMAC_SHA256(bot_token, "WebAppData")
+    Старая схема (старые клиенты и Telegram Login Widget):
+        secret = SHA256(bot_token)
+    Пробуем обе — тогда приложение работает и в новых, и в старых клиентах.
+    """
+    modern = hmac.new(bot_token.encode(), b"WebAppData", hashlib.sha256).digest()
+    legacy = hashlib.sha256(bot_token.encode()).digest()
+    return [modern, legacy]
+
+
 def validate_init_data(init_data: str, bot_token: str) -> dict | None:
     """Валидирует initData от Telegram WebApp / Login Widget. Возвращает объект user или None."""
     if not init_data:
         return None
     received_hash = None
-    check_string = ""
     calc = ""
+    secrets = _init_data_secrets(bot_token)
     for pairs in _init_data_variants(init_data):
         received_hash = pairs.pop("hash", None)
         if not received_hash:
             return None
-        # Bot API 8.0+ добавил поле signature (для сторонней валидации).
+        # Bot API 8.0+ добавил поле signature (Ed25519 для сторонней проверки).
         # Оно НЕ входит в data-check-string для hash, поэтому его нужно исключить,
         # иначе проверка подписи не сойдётся у современных клиентов Telegram.
         pairs.pop("signature", None)
         check_string = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
-        secret = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
-        calc = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
+        for secret in secrets:
+            calc = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
+            if hmac.compare_digest(calc, received_hash):
+                break
         if hmac.compare_digest(calc, received_hash):
             break
     else:
