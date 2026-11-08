@@ -19,7 +19,7 @@ import hmac
 import json
 import logging
 import time
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, unquote
 
 from aiohttp import web
 
@@ -58,23 +58,53 @@ def verify_session(token: str, bot_token: str) -> int | None:
         return None
 
 
+def _init_data_variants(init_data: str) -> list[dict]:
+    """Варианты разбора initData.
+
+    Основной — стандартный query-разбор (unquote_plus превращает '+' в пробел).
+    Запасной — ручной разбор с unquote (без замены '+' на пробел): если в полях
+    Telegram реально встречается '+' (например, в JSON пользователя), первый
+    вариант даст другое значение и хеш не сойдётся.
+    """
+    variants: list[dict] = []
+    try:
+        variants.append(dict(parse_qsl(init_data, keep_blank_values=True)))
+    except Exception:
+        pass
+    alt: dict[str, str] = {}
+    for part in init_data.split("&"):
+        if not part:
+            continue
+        k, _, v = part.partition("=")
+        alt[unquote(k)] = unquote(v)
+    if alt and alt not in variants:
+        variants.append(alt)
+    return variants
+
+
 def validate_init_data(init_data: str, bot_token: str) -> dict | None:
     """Валидирует initData от Telegram WebApp / Login Widget. Возвращает объект user или None."""
-    try:
-        pairs = dict(parse_qsl(init_data, keep_blank_values=True))
-    except Exception:
+    if not init_data:
         return None
-    received_hash = pairs.pop("hash", None)
-    if not received_hash:
-        return None
-    # Bot API 8.0+ добавляет поле signature (для сторонней валидации).
-    # Оно НЕ входит в data-check-string для hash, поэтому его нужно исключить,
-    # иначе проверка подписи не сойдётся у современных клиентов Telegram.
-    pairs.pop("signature", None)
-    check_string = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
-    secret = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
-    calc = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(calc, received_hash):
+    received_hash = None
+    check_string = ""
+    calc = ""
+    for pairs in _init_data_variants(init_data):
+        received_hash = pairs.pop("hash", None)
+        if not received_hash:
+            return None
+        # Bot API 8.0+ добавил поле signature (для сторонней валидации).
+        # Оно НЕ входит в data-check-string для hash, поэтому его нужно исключить,
+        # иначе проверка подписи не сойдётся у современных клиентов Telegram.
+        pairs.pop("signature", None)
+        check_string = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
+        secret = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+        calc = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
+        if hmac.compare_digest(calc, received_hash):
+            break
+    else:
+        # ни один вариант не сошёлся — логируем причину без самих данных
+        _log_init_failure(init_data, received_hash, calc)
         return None
     try:
         if abs(time.time() - int(pairs.get("auth_date", "0"))) > 86400:
@@ -85,6 +115,21 @@ def validate_init_data(init_data: str, bot_token: str) -> dict | None:
         return json.loads(pairs.get("user", "{}"))
     except ValueError:
         return None
+
+
+def _log_init_failure(init_data: str, received_hash: str | None, calc: str) -> None:
+    """Диагностика отказа валидации: только метаданные, без данных пользователя."""
+    try:
+        fields = [p.split("=", 1)[0] for p in init_data.split("&") if p]
+    except Exception:
+        fields = []
+    log.warning(
+        "initData: подпись не сошлась (len=%s, полей=%s, есть hash=%s, есть user=%s, "
+        "есть signature=%s, расхождение=%s)",
+        len(init_data), len(fields), bool(received_hash),
+        "user" in fields, "signature" in fields,
+        "совпало" if received_hash == calc else "не совпало",
+    )
 
 
 def user_id_from_request(request: web.Request) -> int:

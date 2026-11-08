@@ -115,6 +115,8 @@ logging.basicConfig(
     handlers=_log_handlers,
 )
 log = logging.getLogger("bot")
+# отдельный логгер для middleware (внутри функций имя log перекрывается)
+_bot_log = logging.getLogger("bot")
 
 bot: Bot | None = None
 bot_username: str | None = None
@@ -124,11 +126,7 @@ redis_client: redis.Redis | None = None
 
 router = Router()
 
-# ---- очистка чата при переходе между пунктами меню ----
-
-_chat_log: dict[int, deque[int]] = defaultdict(lambda: deque(maxlen=100))
-# reply-клавиатура, которую надо подставить к первому ответу после чистки чата
-_pending_kb: dict[int, ReplyKeyboardMarkup] = {}
+# ---- логирование входящих сообщений (подчистка чата отключена) ----
 
 ADMIN_NAV_BUTTONS = {
     "📊 Статистика", "👥 Клиенты", "⛔ Отозвать", "➕ Продлить", "🎁 Подарить",
@@ -140,47 +138,12 @@ ADMIN_NAV_BUTTONS = {
 }
 
 
-def _track(method):
-    @functools.wraps(method)
-    async def inner(self, *args, **kwargs):
-        kb = _pending_kb.get(self.chat.id)
-        if kb is not None and kwargs.get("reply_markup") is None:
-            kwargs["reply_markup"] = kb
-        _pending_kb.pop(self.chat.id, None)
-        sent = await method(self, *args, **kwargs)
-        if isinstance(sent, Message):
-            _chat_log[self.chat.id].append(sent.message_id)
-        return sent
-
-    return inner
-
-
-Message.answer = _track(Message.answer)
-Message.answer_photo = _track(Message.answer_photo)
-
-
 @router.message.outer_middleware()
-async def clear_chat_on_nav(handler, event, data):
-    chat_id = event.chat.id
+async def log_incoming(handler, event, data):
+    """Логирует входящие сообщения. Переписку в чате больше не удаляем."""
     text = event.text or ""
-    if text in NAV_BUTTONS or text.startswith("/start"):
-        # переход в другой пункт меню — удаляем всю прошлую переписку
-        log = _chat_log[chat_id]
-        for mid in list(log) + [event.message_id]:
-            try:
-                await event.bot.delete_message(chat_id, mid)
-            except Exception:
-                pass
-        log.clear()
-        if text in ADMIN_NAV_BUTTONS and is_admin(event.from_user.id):
-            _pending_kb[chat_id] = admin_menu()
-        else:
-            _pending_kb[chat_id] = await nav_menu(event.from_user.id)
-        try:
-            return await handler(event, data)
-        finally:
-            _pending_kb.pop(chat_id, None)
-    _chat_log[chat_id].append(event.message_id)
+    if text:
+        _bot_log.info("входящее от %s: %r", event.from_user.id, text[:40])
     return await handler(event, data)
 
 
@@ -929,18 +892,21 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
             return
     await state.clear()  # сбрасываем любой незавершённый FSM-диалог
 
-    # Если настроен Mini App — отправляем кнопку открытия приложения
+    # Бот — только точка входа: встречаем пользователя и отправляем в приложение.
+    # Всё остальное (подписка, оплата, настройки, рефералы) живёт в Mini App.
     if config.WEBAPP_ENABLED and config.MINIAPP_URL:
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
                 text="🚀 Открыть приложение",
                 web_app=WebAppInfo(url=config.MINIAPP_URL),
-            ),
-        ]])
+            )],
+            ([InlineKeyboardButton(text="🌐 Сайт K.O. Gateway", url=config.SITE_URL)]
+             if config.SITE_URL else []),
+        ])
         await message.answer(
             "👋 Привет! Это <b>K.O. Gateway</b>.\n\n"
-            "Нажмите кнопку ниже, чтобы открыть приложение: покупка подписки, "
-            "пробный период, ссылки для подключения и реферальная программа.",
+            "Нажмите кнопку ниже — откроется приложение: оплата подписки, пробный период, "
+            "ссылки для подключения, реферальная программа и настройки.",
             reply_markup=kb,
         )
         return
