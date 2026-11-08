@@ -429,16 +429,34 @@
     // Скелетоны на время загрузки данных
     app.innerHTML = skeletonHtml();
     renderNav();
+    // Приложение вне Telegram: initData пуст, авторизация невозможна —
+    // показываем понятную инструкцию вместо технической ошибки «bad initData».
+    if (!tg || !tg.initData) {
+      const bot = window.__botUrl || 'https://t.me/KO_Gateway_bot';
+      const site = window.__siteUrl || '';
+      app.innerHTML = `<div class="view-enter"><div class="card">
+        <div class="hero-title">Откройте приложение в Telegram</div>
+        <div class="hero-sub" style="color:var(--hint)">Это приложение работает только внутри Telegram:
+          нажмите кнопку «Открыть приложение» в боте — здесь появятся подписка,
+          ссылки для подключения и настройки.</div>
+        <p style="margin-top:1.2rem"><a class="btn" href="${esc(bot)}" target="_blank" rel="noopener">Открыть бота в Telegram</a></p>
+        ${site ? `<p><a class="btn secondary" href="${esc(site)}" target="_blank" rel="noopener">🌐 Сайт K.O. Gateway</a></p>` : ''}
+        <button class="btn secondary" onclick="location.reload()">🔄 Повторить</button></div></div>`;
+      renderNav();
+      return;
+    }
     try {
       await auth();
       me = await api('/api/me');
       render();
     } catch (e) {
+      const bot = window.__botUrl || 'https://t.me/KO_Gateway_bot';
       app.innerHTML = `<div class="view-enter"><div class="card">
         <div class="hero-title">Не удалось авторизоваться</div>
         <div class="hero-sub" style="color:var(--hint)">${esc(e.message)}</div>
         <p class="note">Откройте приложение через кнопку в боте.</p>
-        <button class="btn" onclick="location.reload()">🔄 Повторить</button></div></div>`;
+        <p><a class="btn" href="${esc(bot)}" target="_blank" rel="noopener">Открыть бота в Telegram</a></p>
+        <button class="btn secondary" onclick="location.reload()">🔄 Повторить</button></div></div>`;
       renderNav();
     }
   })();

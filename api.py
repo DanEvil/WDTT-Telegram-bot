@@ -204,7 +204,11 @@ async def h_auth(request: web.Request) -> web.Response:
         return web.json_response({"error": "bad json"}, status=400)
     user = validate_init_data(str(body.get("initData") or ""), config.TELEGRAM_TOKEN)
     if not user or not user.get("id"):
-        return web.json_response({"error": "bad initData"}, status=401)
+        return web.json_response(
+            {"error": "Откройте приложение внутри Telegram (через кнопку в боте) — "
+                      "в браузере Telegram не передаёт данные аккаунта."},
+            status=401,
+        )
     uid = int(user["id"])
     return web.json_response({
         "token": make_session(uid, config.TELEGRAM_TOKEN),

@@ -73,7 +73,11 @@ async def api_auth(request: web.Request) -> web.Response:
     init_data = str(body.get("initData") or "")
     user = validate_init_data(init_data, config.TELEGRAM_TOKEN)
     if not user or not user.get("id"):
-        return web.json_response({"error": "bad initData"}, status=401)
+        return web.json_response(
+            {"error": "Откройте приложение внутри Telegram (через кнопку в боте) — "
+                      "в браузере Telegram не передаёт данные аккаунта."},
+            status=401,
+        )
     uid = int(user["id"])
     token = make_session(uid, config.TELEGRAM_TOKEN)
     return web.json_response({
@@ -284,10 +288,13 @@ def make_webapp() -> web.Application:
             "<title>K.O. Gateway — подписка</title>",
             f"<title>{brand} — подписка</title>",
         )
+        bot_username = (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip()
+        bot_url = f"https://t.me/{bot_username}" if bot_username else ""
         html_text = html_text.replace(
             "<body>",
             f'<body>\n<script>window.__brand = {json.dumps(brand)};'
-            f'window.__siteUrl = {json.dumps(getattr(config, "SITE_URL", ""))};</script>',
+            f'window.__siteUrl = {json.dumps(getattr(config, "SITE_URL", ""))};'
+            f'window.__botUrl = {json.dumps(bot_url)};</script>',
             1,
         )
         return web.Response(text=html_text, content_type="text/html")
