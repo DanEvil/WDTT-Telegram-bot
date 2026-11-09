@@ -412,6 +412,24 @@ async def h_settings_post(request: web.Request) -> web.Response:
     })
 
 
+async def h_instructions(request: web.Request) -> web.Response:
+    """Пошаговые инструкции по подключению со скриншотами (единый источник — instructions.py)."""
+    import instructions as instr
+
+    platforms = []
+    for key, p in instr.PLATFORMS.items():
+        platforms.append({
+            "key": key,
+            "title": p["title"],
+            "intro": p["intro"],
+            "app_url": p.get("app_url"),
+            "app_label": p.get("app_label"),
+            "links": [{"url": u, "label": l} for u, l in p.get("links", [])],
+            "steps": [{"img": instr.step_img(img), "caption": cap} for img, cap in p["steps"]],
+        })
+    return web.json_response({"intro": instr.INTRO, "platforms": platforms})
+
+
 def register_v1_routes(app: web.Application, prefix: str = "/api/v1") -> None:
     """Монтирует единый API экосистемы в aiohttp-приложение (сайт или мини-апп)."""
     app.router.add_post(f"{prefix}/auth", h_auth)
@@ -422,3 +440,4 @@ def register_v1_routes(app: web.Application, prefix: str = "/api/v1") -> None:
     app.router.add_get(f"{prefix}/check-payment", h_check_payment)
     app.router.add_get(f"{prefix}/settings", h_settings_get)
     app.router.add_post(f"{prefix}/settings", h_settings_post)
+    app.router.add_get(f"{prefix}/instructions", h_instructions)

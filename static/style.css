@@ -292,3 +292,8 @@ select:disabled { opacity: .5; }
   .site-link { margin: 10px 16px; }
 }
 @media (min-width: 1024px) { #app { max-width: 680px; } }
+
+/* пошаговые инструкции со скриншотами */
+.instr-step{margin:1rem 0;text-align:center}
+.instr-step img{max-width:100%;max-height:420px;border-radius:10px;border:1px solid var(--border,#333)}
+.instr-step figcaption{color:var(--muted,var(--hint,#888));font-size:.85rem;margin-top:.4rem}

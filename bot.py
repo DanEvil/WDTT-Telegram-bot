@@ -10,6 +10,7 @@ import html
 import json
 import logging
 import re
+import secrets
 import time
 import uuid
 from collections import defaultdict, deque
@@ -73,6 +74,7 @@ from db import (
     list_vk_accounts,
     mark_bind_code_used,
     confirm_login_request,
+    create_auto_login,
     record_vk_issued,
     claim_trial,
     mark_referral_rewarded,
@@ -98,6 +100,7 @@ from payments import create_payment, fetch_payment, charge_saved_method
 from plans import ALL_PLANS_BY_ID, DEVICE_ADDONS, PLANS, TRIAL
 from wdtt import WdttClient, WdttError
 from server_setup import SetupError, deploy_server
+from server_select import pick_least_loaded_server_id
 
 import logging.handlers
 
@@ -313,20 +316,7 @@ async def get_default_server_id() -> int | None:
     return servers[0]["id"] if servers else None
 
 
-async def pick_least_loaded_server_id() -> int | None:
-    """Сервер с наименьшим числом активных клиентов, но не выше лимита SERVER_MAX_USERS.
-
-    Если все серверы заполнены до лимита — возвращает None (админ получит
-    понятную ошибку и добавит новый сервер).
-    """
-    servers = await list_servers()
-    if not servers:
-        return None
-    counts = await server_active_counts()
-    available = [s for s in servers if counts.get(s["id"], 0) < config.SERVER_MAX_USERS]
-    if not available:
-        return None
-    return min(available, key=lambda s: (counts.get(s["id"], 0), s["id"]))["id"]
+# pick_least_loaded_server_id импортируется из server_select (общий модуль с сайтом)
 
 
 async def server_has_capacity(server_id: int) -> bool:
@@ -894,14 +884,25 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
     # Бот — только точка входа: встречаем пользователя и отправляем в приложение.
     # Всё остальное (подписка, оплата, настройки, рефералы) живёт в Mini App.
+    # Кнопка «Сайт» — одноразовая ссылка автовхода: переход на сайт из Telegram
+    # сразу открывает профиль, без ручного входа.
+    site_url = ""
+    if config.SITE_URL and message.from_user:
+        try:
+            code = secrets.token_urlsafe(24)
+            await create_auto_login(code, message.from_user.id, message.from_user.username)
+            site_url = f"{config.SITE_URL.rstrip('/')}/login/auto?code={code}"
+        except Exception:
+            log.warning("не удалось создать автовход на сайт", exc_info=True)
+            site_url = config.SITE_URL
     if config.WEBAPP_ENABLED and config.MINIAPP_URL:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
                 text="🚀 Открыть приложение",
                 web_app=WebAppInfo(url=config.MINIAPP_URL),
             )],
-            ([InlineKeyboardButton(text="🌐 Сайт K.O. Gateway", url=config.SITE_URL)]
-             if config.SITE_URL else []),
+            ([InlineKeyboardButton(text="🌐 Сайт K.O. Gateway (войти автоматически)", url=site_url)]
+             if site_url else []),
         ])
         await message.answer(
             "👋 Привет! Это <b>K.O. Gateway</b>.\n\n"

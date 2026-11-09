@@ -40,10 +40,12 @@ from config import (
     YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY,
     WEBHOOK_SKIP_IP_CHECK, SITE_URL,
 )
+import config
+from server_select import pick_least_loaded_server_id
 from db import (
     conn as db_conn, init_db, get_customer, upsert_customer,
     add_payment, get_payment, list_payments, get_plan, list_plans,
-    claim_trial, list_servers, stats, get_server,
+    claim_trial, list_servers, stats, get_server, server_active_counts,
     get_referrals_count, get_site_user_by_email,
     generate_referral_code, add_site_referral, get_site_referrals_count,
     get_site_user_by_referral_code,
@@ -507,12 +509,15 @@ async def handle_login_telegram(request: web.Request) -> web.Response:
     raise web.HTTPFound(f"https://t.me/{BOT_USERNAME}?start=web_login_{code}")
 
 
-async def handle_login_confirm(request: web.Request) -> web.Response:
-    """Подтверждение входа: бот записал telegram_id — выдаём сессию сайта."""
-    code = (request.query.get("code") or "").strip()
+async def _telegram_login_by_code(code: str, max_age: int) -> web.Response:
+    """Вход на сайт по одноразовому коду из login_requests (telegram_id уже записан).
+
+    max_age — срок жизни ссылки в секундах (для автовхода из бота — 10 минут).
+    """
     await init_db()
     row = await get_login_request(code)
-    if not row or not row.get("telegram_id") or row.get("used"):
+    if (not row or not row.get("telegram_id") or row.get("used")
+            or int(row.get("created_at") or 0) < int(time.time()) - max_age):
         return web.Response(
             text=_page("Ошибка", "<p class='err'>Ссылка входа недействительна или уже использована.</p>"
                               "<p><a href='/login'>Войти заново</a></p>"),
@@ -553,6 +558,22 @@ async def handle_login_confirm(request: web.Request) -> web.Response:
         "telegram_id": telegram_id,
     })
     return response
+
+
+async def handle_login_confirm(request: web.Request) -> web.Response:
+    """Подтверждение входа: бот записал telegram_id — выдаём сессию сайта."""
+    code = (request.query.get("code") or "").strip()
+    return await _telegram_login_by_code(code, max_age=3600)
+
+
+async def handle_login_auto(request: web.Request) -> web.Response:
+    """Автовход на сайт по ссылке из бота (t.me/... -> сайт): сессия сразу, без кликов.
+
+    Бот генерирует одноразовый код с уже записанным telegram_id —
+    переход по ссылке «Сайт» в боте сразу открывает профиль на сайте.
+    """
+    code = (request.query.get("code") or "").strip()
+    return await _telegram_login_by_code(code, max_age=600)
 
 
 async def handle_auth_telegram(request: web.Request) -> web.Response:
@@ -660,8 +681,7 @@ async def handle_profile(request: web.Request) -> web.Response:
         used_bytes = 0
         total_gb = int(plan.get("traffic_gb") or 0) if plan else 0
         try:
-            servers = await list_servers()
-            sid = customer["server_id"] or (servers[0]["id"] if servers else None)
+            sid = customer["server_id"] or await pick_least_loaded_server_id()
             if sid:
                 server = await get_server(sid)
                 client = WdttClient(server["base_url"], server["username"], server["password"], verify_ssl=bool(server["verify_ssl"]))
@@ -784,35 +804,8 @@ async def handle_profile(request: web.Request) -> web.Response:
     """
 
     # ----- история платежей -----
-    if tg_id:
-        payments = await list_payments(tg_id, limit=10)
-        if payments:
-            rows_html = ""
-            for p in payments:
-                st = p.get("status") or ""
-                st_badge = {
-                    "fulfilled": "ok", "paid": "ok", "succeeded": "ok",
-                    "pending": "", "cancelled": "err",
-                }.get(st, "")
-                st_text = {"fulfilled": "Оплачен", "paid": "Оплачен", "succeeded": "Оплачен",
-                           "pending": "Ожидает", "cancelled": "Отменён"}.get(st, st)
-                rows_html += (
-                    f"<tr><td>{fmt_date(p['created_at'])}</td>"
-                    f"<td>{html.escape(str(p.get('plan_id') or ''))}</td>"
-                    f"<td>{fmt_price(p.get('amount'))} ₽</td>"
-                    f"<td><span class='badge {st_badge}'>{st_text}</span></td></tr>"
-                )
-            body += f"""
-    <div class="card">
-      <h3>💳 История платежей</h3>
-      <table>
-        <tr><th>Дата</th><th>Тариф</th><th>Сумма</th><th>Статус</th></tr>
-        {rows_html}
-      </table>
-    </div>
-    """
+    # Убрано по требованию: в профиле на сайте платёжная история не показывается.
 
-    body += "<a href='/'>На главную</a> | <a href='/logout'>Выход</a>"
     return web.Response(text=_page("Профиль", body, session), content_type="text/html")
 
 async def handle_buy(request: web.Request) -> web.Response:
@@ -827,14 +820,11 @@ async def handle_buy(request: web.Request) -> web.Response:
     if plan_id == "trial":
         if not await claim_trial(sub_id):
             return web.Response(text=_page("Ошибка", "<p class='err'>Вы уже использовали пробный период.</p>"))
-        # пробный период — выдаём сразу без оплаты
+        # пробный период — выдаём сразу без оплаты, на наименее загруженный сервер
         try:
-            servers = await list_servers()
-            sid = None
-            if servers:
-                sid = servers[0]["id"]
+            sid = await pick_least_loaded_server_id()
             if not sid:
-                return web.Response(text=_page("Ошибка", "<p class='err'>Нет настроенных серверов WDTT.</p>"))
+                return web.Response(text=_page("Ошибка", "<p class='err'>Нет свободных серверов WDTT (все заполнены до лимита). Обратитесь к администратору.</p>"))
             server = await get_server(sid)
             client = WdttClient(server["base_url"], server["username"], server["password"], verify_ssl=bool(server["verify_ssl"]))
             await client.login()
@@ -987,6 +977,23 @@ async def handle_yookassa_webhook(request: web.Request) -> web.Response:
     return web.Response(text="ok")
 
 async def handle_instruction(request: web.Request) -> web.Response:
+    import instructions as instr
+
+    def platform_html(key: str) -> str:
+        p = instr.PLATFORMS[key]
+        links = ""
+        if p.get("app_url"):
+            links += (f"<p><a class='btn' href='{p['app_url']}' target='_blank' rel='noopener'>"
+                      f"{html.escape(p['app_label'])}</a></p>")
+        for url, label in p.get("links", []):
+            links += f"<p><a href='{url}' target='_blank' rel='noopener'>{html.escape(label)}</a></p>"
+        steps = "".join(
+            f"<figure class='instr-step'><img src='{instr.step_img(img)}' alt='{html.escape(cap)}' loading='lazy'>"
+            f"<figcaption>{html.escape(cap)}</figcaption></figure>"
+            for img, cap in p["steps"]
+        )
+        return f"<div class='card'><h3>{p['title']}</h3><p>{p['intro']}</p>{links}{steps}</div>"
+
     body = f"""
     <h2>📖 Инструкция подключения</h2>
     <div class="card">
@@ -1005,21 +1012,15 @@ async def handle_instruction(request: web.Request) -> web.Response:
     </div>
     <div class="card">
       <h3>2. Добавьте конфигурацию</h3>
-      <p>Скопируйте вашу ссылку <code>wdtt://...</code> из профиля на сайте или из бота Telegram.</p>
-      <p><b>Android:</b> откройте приложение, вкладку «Туннель», включите «Режим ссылки»,
-         вставьте <code>wdtt://</code> ссылку и нажмите «Подключить».</p>
-      <p><b>iOS:</b> установите TestFlight из App Store, перейдите по
-         <a href="{APP_IOS_JOIN_URL}" target="_blank" rel="noopener">пригласительной ссылке</a> клиента,
-         установите приложение и импортируйте конфигурацию: в приложении откройте «Settings» →
-         «Backup &amp; Restore» → «Import from Connection Link…» и разрешите вставку — ссылка
-         подставится из буфера обмена (см. скриншоты в боте, команда «📖 Инструкция»).</p>
-      <p><b>Windows:</b> используйте qWDTT или другой клиент, поддерживающий <code>wdtt://</code>.</p>
+      <p>Скопируйте вашу ссылку <code>wdtt://...</code> из профиля (в приложении или в боте Telegram),
+        и следуйте пошаговой инструкции для вашей платформы ниже.</p>
     </div>
+    {platform_html("android")}
+    {platform_html("ios")}
     <div class="card">
       <h3>3. Подключитесь</h3>
       <p>Нажмите «Подключить». Готово — весь трафик идёт через защищённый туннель.</p>
     </div>
-    <p><a href='/'>На главную</a>{' · ' + f'<a href="{_bot_link()}">🤖 Открыть бота</a>' if BOT_USERNAME else ''}</p>
     """
     return web.Response(text=_page("Инструкция", body, _get_session(request), active="Инструкция"), content_type="text/html")
 
@@ -1033,18 +1034,119 @@ async def handle_admin(request: web.Request) -> web.Response:
     await init_db()
     s = await stats()
     servers = await list_servers()
+    counts = await server_active_counts()
+    installs_rows = "".join(
+        f"<tr><td>#{i['id']}</td><td>{html.escape(i['name'])}</td><td>{html.escape(i['host'])}</td>"
+        f"<td>{'⏳ выполняется' if i['status'] == 'running' else ('✅ готово' if i['status'] == 'done' else '⚠️ ошибка')}</td>"
+        f"<td>{html.escape(i.get('detail') or '')}</td></tr>"
+        for i in sorted(_installs.values(), key=lambda x: x["id"], reverse=True)[:10]
+    ) or "<tr><td colspan='5'>—</td></tr>"
+    running = any(i["status"] == "running" for i in _installs.values())
     body = f"""
     <h2>🛠 Админ-панель</h2>
     <p>Всего клиентов: <b>{s['customers']}</b> | Активных: <b>{s['active']}</b></p>
     <p>Оплаченных платежей: <b>{s['paid']}</b> | Выручка: <b>{fmt_price(s['revenue'])} ₽</b></p>
     <h3>Серверы:</h3>
     <table>
-      <tr><th>ID</th><th>Имя</th><th>URL</th></tr>
-      {''.join(f"<tr><td>{srv['id']}</td><td>{html.escape(srv['name'])}</td><td>{html.escape(srv['base_url'])}</td></tr>" for srv in servers)}
+      <tr><th>ID</th><th>Имя</th><th>URL</th><th>Активных клиентов</th><th>Лимит</th></tr>
+      {''.join(f"<tr><td>{srv['id']}</td><td>{html.escape(srv['name'])}</td><td>{html.escape(srv['base_url'])}</td><td>{counts.get(srv['id'], 0)}</td><td>{config.SERVER_MAX_USERS}</td></tr>" for srv in servers)}
+    </table>
+    <p class="note">Новые клиенты автоматически распределяются на наименее загруженный сервер (лимит {config.SERVER_MAX_USERS} пользователей на панель).</p>
+
+    <h3 id="install">➕ Добавить сервер (автоустановка панели по SSH)</h3>
+    <form method="post" action="/admin/server/install" class="card">
+      <p><input name="name" placeholder="Имя сервера (например, de2)" required style="width:100%"></p>
+      <p><input name="host" placeholder="IP-адрес сервера" required style="width:100%"></p>
+      <p><input name="ssh_port" placeholder="Порт SSH" value="22" required style="width:100%"></p>
+      <p><input name="ssh_user" placeholder="Логин SSH (обычно root)" required style="width:100%"></p>
+      <p><input name="ssh_password" type="password" placeholder="Пароль SSH" required style="width:100%" autocomplete="off"></p>
+      <p><button class="btn" type="submit">🚀 Установить панель на сервер</button></p>
+      <p class="note">Панель WDTT установится автоматически (2–10 минут): скачается инсталлятор,
+        поднимется панель, сменятся дефолтные логин/пароль, выставится лимит пользователей.
+        Логин и пароль панели покажутся в списке установок ниже и в логах бота.</p>
+    </form>
+
+    <h3 id="installs">Установки серверов:</h3>
+    <table>
+      <tr><th>ID</th><th>Имя</th><th>Хост</th><th>Статус</th><th>Детали</th></tr>
+      {installs_rows}
     </table>
     <p><a href='/'>На главную</a></p>
     """
-    return web.Response(text=_page("Админ-панель", body, session), content_type="text/html")
+    page = _page("Админ-панель", body, session)
+    if running:
+        # пока идёт установка — обновляем страницу, чтобы видеть статус
+        page = page.replace("</head>", '<meta http-equiv="refresh" content="15"></head>', 1)
+    return web.Response(text=page, content_type="text/html")
+
+
+# ---------- админ: автоустановка сервера по SSH (фоном) ----------
+
+_installs: dict[int, dict] = {}
+_install_seq = 0
+
+
+async def _run_install(install_id: int, name: str, host: str, ssh_port: int, ssh_user: str, ssh_password: str) -> None:
+    """Фоновая установка панели WDTT на новый сервер через SSH."""
+    from server_setup import SetupError, deploy_server
+    from db import list_vk_accounts
+
+    rec = _installs[install_id]
+    try:
+        accounts = await list_vk_accounts()
+        vk_cookies = accounts[0]["cookies"] if accounts else None
+        result = await deploy_server(
+            host=host, ssh_port=ssh_port, ssh_user=ssh_user,
+            ssh_password=ssh_password, name=name, vk_cookies=vk_cookies,
+        )
+        rec.update(status="done", detail=f"Сервер #{result['id']} добавлен: {result['base_url']} | логин панели: {result['panel_username']} | пароль: {result['panel_password']}")
+        log.info("site-admin: сервер %s (%s) установлен как #%s", name, host, result["id"])
+    except SetupError as e:
+        rec.update(status="error", detail=str(e)[:1500])
+        log.warning("site-admin: установка %s (%s) не удалась: %s", name, host, e)
+    except Exception as e:
+        rec.update(status="error", detail=str(e)[:1500])
+        log.exception("site-admin: установка %s (%s)", name, host)
+    finally:
+        rec["ssh_password"] = None  # пароль SSH больше не храним
+
+
+def _field(data, key: str) -> str:
+    """Значение формы как строка (aiohttp может вернуть FileField для file-полей)."""
+    v = data.get(key)
+    return v if isinstance(v, str) else ""
+
+
+async def handle_admin_install_server(request: web.Request) -> web.Response:
+    """POST /admin/server/install — запускает автоустановку панели на новом сервере."""
+    session = _require_site_session(request)
+    tg_id = session.get("telegram_id")
+    if not tg_id or not _is_admin(tg_id):
+        return web.Response(text=_page("Ошибка", "<p class='err'>Доступ только для администратора.</p>"), status=403)
+    data = await request.post()
+    name = _field(data, "name").strip()
+    host = _field(data, "host").strip()
+    ssh_user = _field(data, "ssh_user").strip()
+    ssh_password = _field(data, "ssh_password")
+    try:
+        ssh_port = int(_field(data, "ssh_port").strip() or "22")
+    except ValueError:
+        ssh_port = 0
+    if not name or not host or not ssh_user or not ssh_password or not (1 <= ssh_port <= 65535):
+        return web.Response(
+            text=_page("Ошибка", "<p class='err'>Заполните все поля: имя, IP, порт SSH (1–65535), логин и пароль.</p>"),
+            status=400,
+        )
+    global _install_seq
+    _install_seq += 1
+    iid = _install_seq
+    _installs[iid] = {
+        "id": iid, "name": name, "host": host, "status": "running",
+        "detail": "", "started": int(time.time()), "ssh_password": None,
+    }
+    asyncio.create_task(_run_install(iid, name, host, ssh_port, ssh_user, ssh_password))
+    log.info("site-admin tg=%s запустил автоустановку сервера «%s» (%s:%s, user=%s)", tg_id, name, host, ssh_port, ssh_user)
+    raise web.HTTPFound("/admin#installs")
 
 async def handle_settings_post(request: web.Request) -> web.Response:
     """POST /settings — сохранение галочек автопродления и уведомления (нужен привязанный Telegram)."""
@@ -1259,6 +1361,7 @@ def make_app() -> web.Application:
     app.router.add_get("/login", handle_login_get)
     app.router.add_post("/login", handle_login_post)
     app.router.add_get("/login/telegram", handle_login_telegram)
+    app.router.add_get("/login/auto", handle_login_auto)
     app.router.add_get("/auth/telegram/confirm", handle_login_confirm)
     app.router.add_get("/auth/telegram", handle_auth_telegram)
     app.router.add_get("/bind-telegram", handle_bind_telegram)
@@ -1271,6 +1374,7 @@ def make_app() -> web.Application:
     app.router.add_post("/yookassa-webhook", handle_yookassa_webhook)
     app.router.add_get("/instruction", handle_instruction)
     app.router.add_get("/admin", handle_admin)
+    app.router.add_post("/admin/server/install", handle_admin_install_server)
     app.router.add_get("/logout", handle_logout)
     app.router.add_get("/{tail:.*}", handle_404)
 

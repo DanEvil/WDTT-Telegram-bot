@@ -358,19 +358,38 @@
     }
   };
 
-  function helpHtml() {
-    const steps = (arr) => arr.map((s, i) => `<div class="help-step"><span class="n">${i + 1}</span><span>${s}</span></div>`).join('');
-    return headHtml('Инструкция', `Подключение к ${window.__brand || 'K.O. Gateway'}`) +
-      `<div class="card"><h3>🤖 Android</h3>
-        ${steps(['Установите приложение <b>WDTT</b> из Google Play.',
-                 'Нажмите «Добавить» и вставьте ссылку подписки (или отсканируйте QR).',
-                 'Включите VPN — готово.'])}
-      </div>
-      <div class="card"><h3>🍎 iOS</h3>
-        ${steps(['Установите приложение из App Store.',
-                 'Вставьте iOS-ссылку из главного экрана приложения.',
-                 'Разрешите VPN в настройках iOS и подключитесь.'])}
-      </div>`;
+  async function helpHtml() {
+    // Пошаговые инструкции со скриншотами — из общего API (/api/v1/instructions).
+    let data = null;
+    try {
+      data = await api('/api/v1/instructions');
+    } catch (e) { /* offline-фолбэк ниже */ }
+    if (!data || !data.platforms || !data.platforms.length) {
+      return headHtml('Инструкция', `Подключение к ${window.__brand || 'K.O. Gateway'}`) +
+        `<div class="card"><h3>🤖 Android</h3>
+          <p>Установите приложение WDTT (APK), вставьте ссылку <code>wdtt://</code> из профиля и нажмите «Подключить».</p>
+        </div>
+        <div class="card"><h3>🍎 iOS</h3>
+          <p>Установите TestFlight, откройте приглашение, затем в приложении: Settings → Backup & Restore → Import from Connection Link…</p>
+        </div>`;
+    }
+    const cards = data.platforms.map((p) => {
+      let links = '';
+      if (p.app_url) {
+        links += `<p><a class="btn secondary" href="${esc(p.app_url)}" target="_blank" rel="noopener">${esc(p.app_label || 'Скачать')}</a></p>`;
+      }
+      (p.links || []).forEach((l) => {
+        links += `<p><a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a></p>`;
+      });
+      const steps = (p.steps || []).map((s, i) => `
+        <figure class="instr-step">
+          <img src="${esc(s.img)}" alt="${esc(s.caption)}" loading="lazy">
+          <figcaption><b>${i + 1}.</b> ${esc(s.caption)}</figcaption>
+        </figure>`).join('');
+      return `<div class="card"><h3>${esc(p.title)}</h3>
+        <p>${p.intro}</p>${links}${steps}</div>`;
+    }).join('');
+    return headHtml('Инструкция', data.intro || `Подключение к ${window.__brand || 'K.O. Gateway'}`) + cards;
   }
 
   async function render() {
@@ -380,7 +399,7 @@
       if (view === 'home') html = homeHtml();
       else if (view === 'plans') html = await plansHtml();
       else if (view === 'ref') html = await refHtml();
-      else if (view === 'help') html = helpHtml();
+      else if (view === 'help') html = await helpHtml();
       else if (view === 'settings') html = await settingsHtml();
       app.innerHTML = `<div class="view-enter">${html}</div>`;
       renderNav();

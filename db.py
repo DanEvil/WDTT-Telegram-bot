@@ -805,6 +805,20 @@ async def create_login_request(code: str) -> None:
         )
 
 
+async def create_auto_login(code: str, telegram_id: int, username: str | None = None) -> None:
+    """Одноразовая ссылка автовхода на сайт, созданная ботом.
+
+    telegram_id известен сразу (ссылка генерируется внутри Telegram),
+    поэтому сайт по такому коду входит без подтверждения в боте.
+    """
+    async with conn() as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO login_requests (code, telegram_id, username, created_at, used) "
+            "VALUES (?, ?, ?, ?, 0)",
+            (code, telegram_id, username, int(time.time())),
+        )
+
+
 async def confirm_login_request(code: str, telegram_id: int, username: str | None = None) -> bool:
     """Бот подтверждает вход: записывает telegram_id (только один раз)."""
     async with conn() as db:
