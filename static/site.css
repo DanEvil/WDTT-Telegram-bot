@@ -303,4 +303,5 @@ main > *:nth-child(4) { animation-delay: .18s; }
 /* пошаговые инструкции со скриншотами */
 .instr-step{margin:1rem 0;text-align:center}
 .instr-step img{max-width:100%;max-height:420px;border-radius:10px;border:1px solid var(--border,#333)}
+.instr-text{margin:.5rem 0;line-height:1.5}
 .instr-step figcaption{color:var(--muted,var(--hint,#888));font-size:.85rem;margin-top:.4rem}

@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import time
 from urllib.parse import parse_qsl, unquote
 
@@ -61,24 +62,35 @@ def verify_session(token: str, bot_token: str) -> int | None:
 def _init_data_variants(init_data: str) -> list[dict]:
     """Варианты разбора initData.
 
-    Основной — стандартный query-разбор (unquote_plus превращает '+' в пробел).
-    Запасной — ручной разбор с unquote (без замены '+' на пробел): если в полях
-    Telegram реально встречается '+' (например, в JSON пользователя), первый
-    вариант даст другое значение и хеш не сойдётся.
+    Telegram отдаёт query-строку, но разные клиенты кодируют значения по-разному,
+    поэтому перебираем все известные варианты декодирования:
+    1. parse_qsl — стандартный разбор (+ превращается в пробел);
+    2. unquote — ручной разбор без замены '+' на пробел;
+    3. сырые значения — как есть в строке (percent-encoded);
+    4. сырые значения с заменой '+' на пробел.
     """
     variants: list[dict] = []
+
+    def _add(d: dict) -> None:
+        if d and d not in variants:
+            variants.append(d)
+
     try:
-        variants.append(dict(parse_qsl(init_data, keep_blank_values=True)))
+        _add(dict(parse_qsl(init_data, keep_blank_values=True)))
     except Exception:
         pass
+
     alt: dict[str, str] = {}
+    raw: dict[str, str] = {}
     for part in init_data.split("&"):
         if not part:
             continue
         k, _, v = part.partition("=")
         alt[unquote(k)] = unquote(v)
-    if alt and alt not in variants:
-        variants.append(alt)
+        raw[k] = v
+    _add(alt)
+    _add(raw)
+    _add({k: v.replace("+", " ") for k, v in raw.items()})
     return variants
 
 
@@ -104,6 +116,9 @@ def _check_strings(pairs: dict, bot_token: str) -> list[str]:
     1. Просто пары, отсортированные по ключу (классика).
     2. С префиксом "<bot_id>:WebAppData\\n" — новый формат подписи initData
        в свежих клиентах Telegram (Bot API 9.x+).
+    Пары могут включать поле signature: в свежих клиентах (меню-приложение)
+    оно входит в data-check-string, в старых — нет, поэтому обе версии
+    перебираются в validate_init_data.
     """
     base = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
     bot_id = bot_token.split(":", 1)[0]
@@ -123,16 +138,20 @@ def validate_init_data(init_data: str, bot_token: str) -> dict | None:
         received_hash = variant.pop("hash", None)
         if not received_hash:
             return None
-        # Bot API 8.0+ добавил поле signature (Ed25519 для сторонней проверки).
-        # Оно НЕ входит в data-check-string для hash, поэтому его нужно исключить,
-        # иначе проверка подписи не сойдётся у современных клиентов Telegram.
-        variant.pop("signature", None)
-        pairs = variant
-        for check_string in _check_strings(variant, bot_token):
-            for secret in secrets:
-                calc = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
-                if hmac.compare_digest(calc, received_hash):
-                    matched = True
+        # Bot API 8.0+ добавил поле signature (Ed25519). В одних клиентах оно
+        # входит в data-check-string, в других — нет; перебираем оба варианта.
+        pairs_sets = [
+            {k: v for k, v in variant.items() if k != "signature"},
+            variant,
+        ]
+        for pairs in pairs_sets:
+            for check_string in _check_strings(pairs, bot_token):
+                for secret in secrets:
+                    calc = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
+                    if hmac.compare_digest(calc, received_hash):
+                        matched = True
+                        break
+                if matched:
                     break
             if matched:
                 break
@@ -166,6 +185,10 @@ def _log_init_failure(init_data: str, received_hash: str | None, calc: str) -> N
         "user" in fields, "signature" in fields,
         "совпало" if received_hash == calc else "не совпало",
     )
+    # Временная отладка: включается флагом DEBUG_INIT_DATA=1 (для подбора схемы подписи).
+    if os.getenv("DEBUG_INIT_DATA") == "1":
+        log.warning("initData DEBUG (base64): %s",
+                    base64.b64encode(init_data.encode("utf-8")).decode("ascii"))
 
 
 def user_id_from_request(request: web.Request) -> int:
@@ -186,8 +209,11 @@ def bot_url(start: str = "") -> str:
     return f"https://t.me/{config.TELEGRAM_BOT_USERNAME}" + (f"?start={start}" if start else "")
 
 
-def ecosystem_payload() -> dict:
-    """Все точки входа экосистемы в одном ответе — для сайта, приложений, бота."""
+def ecosystem_payload(windows_url: str | None = None) -> dict:
+    """Все точки входа экосистемы в одном ответе — для сайта, приложений, бота.
+
+    windows_url — эффективная ссылка PWDTT из админ-панели (если None — из конфига).
+    """
     return {
         "brand": config.BRAND_NAME,
         "bot": {
@@ -201,10 +227,16 @@ def ecosystem_payload() -> dict:
             "android": config.APP_ANDROID_URL,
             "ios_testflight": config.APP_IOS_TESTFLIGHT_URL,
             "ios_join": config.APP_IOS_JOIN_URL,
-            "windows": config.APP_WINDOWS_URL,
+            "windows": windows_url or config.APP_WINDOWS_URL,
         },
         "api": {"version": "v1", "base": "/api/v1"},
     }
+
+
+async def app_windows_url_effective() -> str:
+    """Ссылка PWDTT (Windows) с учётом значения, заданного в админ-панели."""
+    from db import get_app_windows_url
+    return await get_app_windows_url()
 
 
 def _plan_json(p: dict, addon: bool) -> dict:
@@ -243,6 +275,7 @@ async def status_payload(uid: int) -> dict:
         "has_subscription": bool(customer and customer.get("wdtt_password")),
         "trial_used": await has_used_trial(uid),
         "brand": config.BRAND_NAME,
+        "is_admin": is_admin_uid(uid),
     }
     if customer and customer.get("wdtt_password"):
         exp = int(customer.get("expires_at") or 0)
@@ -267,6 +300,7 @@ async def status_payload(uid: int) -> dict:
                 "unlimited": limit_gb == 0,
             }
             result["max_devices"] = int(info.get("max_devices") or plan.get("max_devices") or 1)
+            result["devices_online"] = int(info.get("devices_online") or 0)
             result["links"] = await b.links_json(client, customer["wdtt_password"], customer.get("sub_id"))
         except Exception as e:
             log.warning("api v1 me: панель недоступна для tg %s: %s", uid, e)
@@ -294,13 +328,14 @@ async def h_auth(request: web.Request) -> web.Response:
     return web.json_response({
         "token": make_session(uid, config.TELEGRAM_TOKEN),
         "user": {"id": uid, "first_name": user.get("first_name", ""), "username": user.get("username", "")},
+        "is_admin": is_admin_uid(uid),
         "stars_enabled": False,
-        "ecosystem": ecosystem_payload(),
+        "ecosystem": ecosystem_payload(await app_windows_url_effective()),
     })
 
 
 async def h_ecosystem(request: web.Request) -> web.Response:
-    return web.json_response(ecosystem_payload())
+    return web.json_response(ecosystem_payload(await app_windows_url_effective()))
 
 
 async def h_plans(request: web.Request) -> web.Response:
@@ -416,8 +451,9 @@ async def h_instructions(request: web.Request) -> web.Response:
     """Пошаговые инструкции по подключению со скриншотами (единый источник — instructions.py)."""
     import instructions as instr
 
+    plats = instr.platforms_with_windows_app(await app_windows_url_effective())
     platforms = []
-    for key, p in instr.PLATFORMS.items():
+    for key, p in plats.items():
         platforms.append({
             "key": key,
             "title": p["title"],
@@ -425,9 +461,272 @@ async def h_instructions(request: web.Request) -> web.Response:
             "app_url": p.get("app_url"),
             "app_label": p.get("app_label"),
             "links": [{"url": u, "label": l} for u, l in p.get("links", [])],
-            "steps": [{"img": instr.step_img(img), "caption": cap} for img, cap in p["steps"]],
+            "steps": [{"img": instr.step_img(img) if img else None, "caption": cap} for img, cap in p["steps"]],
         })
     return web.json_response({"intro": instr.INTRO, "platforms": platforms})
+
+
+# ---------- админ-панель (общая для сайта и мини-аппа) ----------
+
+def is_admin_uid(uid: int) -> bool:
+    """Админ = в конфиге ADMIN_IDS или назначен через админ-панель (БД)."""
+    from db import is_admin_cached
+    return uid in config.ADMIN_IDS or is_admin_cached(uid)
+
+
+def _admin_only(uid: int) -> web.Response | None:
+    """None, если uid — админ; иначе 403-ответ."""
+    if not is_admin_uid(uid):
+        return web.json_response({"error": "forbidden"}, status=403)
+    return None
+
+
+async def h_admin_overview(request: web.Request) -> web.Response:
+    """GET /api/v1/admin — статистика, серверы с нагрузкой, последние установки. Только админ."""
+    uid = user_id_from_request(request)
+    deny = _admin_only(uid)
+    if deny:
+        return deny
+    from db import init_db, list_servers, server_active_counts, stats
+    import admin_ops
+    await init_db()
+    s = await stats()
+    counts = await server_active_counts()
+    servers = []
+    for srv in await list_servers():
+        servers.append({
+            "id": srv["id"],
+            "name": srv["name"],
+            "base_url": srv["base_url"],
+            "ssh_host": srv.get("ssh_host"),
+            "ssh_port": srv.get("ssh_port"),
+            "ssh_user": srv.get("ssh_user"),
+            "active_users": counts.get(srv["id"], 0),
+        })
+    return web.json_response({
+        "stats": s,
+        "server_max_users": config.SERVER_MAX_USERS,
+        "servers": servers,
+        "installs": [admin_ops.public_install(i) for i in admin_ops.list_installs()],
+        "install_running": admin_ops.any_install_running(),
+    })
+
+
+async def h_admin_add_server(request: web.Request) -> web.Response:
+    """POST /api/v1/admin/servers {name, host, ssh_port, ssh_user, ssh_password} — автоустановка панели по SSH. Только админ."""
+    uid = user_id_from_request(request)
+    deny = _admin_only(uid)
+    if deny:
+        return deny
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+    name = str(body.get("name") or "").strip()
+    host = str(body.get("host") or "").strip()
+    ssh_user = str(body.get("ssh_user") or "").strip()
+    ssh_password = str(body.get("ssh_password") or "")
+    try:
+        ssh_port = int(body.get("ssh_port") or 22)
+    except (TypeError, ValueError):
+        ssh_port = 0
+    if not name or not host or not ssh_user or not ssh_password or not (1 <= ssh_port <= 65535):
+        return web.json_response(
+            {"error": "Заполните все поля: имя, IP, порт SSH (1–65535), логин и пароль."},
+            status=400,
+        )
+    import admin_ops
+    rec = admin_ops.start_install(name, host, ssh_port, ssh_user, ssh_password)
+    log.info("api-admin tg=%s запустил автоустановку сервера «%s» (%s:%s, user=%s)", uid, name, host, ssh_port, ssh_user)
+    return web.json_response({"ok": True, "install": admin_ops.public_install(rec)}, status=202)
+
+
+async def h_admin_installs(request: web.Request) -> web.Response:
+    """GET /api/v1/admin/installs — статусы установок серверов. Только админ."""
+    uid = user_id_from_request(request)
+    deny = _admin_only(uid)
+    if deny:
+        return deny
+    import admin_ops
+    return web.json_response({
+        "installs": [admin_ops.public_install(i) for i in admin_ops.list_installs()],
+        "install_running": admin_ops.any_install_running(),
+    })
+
+
+# ---------- управление администраторами (через админ-панель) ----------
+
+async def h_admin_admins(request: web.Request) -> web.Response:
+    """GET /api/v1/admin/admins — список админов (конфиг + назначенные) и инвайт-ссылки. Только админ."""
+    uid = user_id_from_request(request)
+    deny = _admin_only(uid)
+    if deny:
+        return deny
+    from db import list_admin_invites, list_admins
+    db_admins = await list_admins()
+    have = {a["telegram_id"] for a in db_admins}
+    admins = [
+        {
+            "telegram_id": a["telegram_id"],
+            "source": a["source"],
+            "added_by": a.get("added_by"),
+            "created_at": a["created_at"],
+        }
+        for a in db_admins
+    ]
+    for env_id in sorted(set(config.ADMIN_IDS) - have):
+        admins.append({"telegram_id": env_id, "source": "env", "added_by": None, "created_at": 0})
+    admins.sort(key=lambda a: a["telegram_id"])
+    invites = [
+        {
+            "code": i["code"],
+            "url": bot_url(f"admin_{i['code']}"),
+            "used": bool(i["used"]),
+            "used_by": i.get("used_by"),
+            "created_at": i["created_at"],
+        }
+        for i in await list_admin_invites()
+    ]
+    return web.json_response({"admins": admins, "invites": invites})
+
+
+def _tg_id_from(body: dict) -> int | None:
+    raw = body.get("telegram_id")
+    if raw is None:
+        return None
+    try:
+        tg = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return tg if tg > 0 else None
+
+
+async def h_admin_add_admin(request: web.Request) -> web.Response:
+    """POST /api/v1/admin/admins {telegram_id} — назначить админа по Telegram ID. Только админ."""
+    uid = user_id_from_request(request)
+    deny = _admin_only(uid)
+    if deny:
+        return deny
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+    tg = _tg_id_from(body)
+    if tg is None:
+        return web.json_response({"error": "Нужен положительный telegram_id."}, status=400)
+    from db import add_admin
+    await add_admin(tg, added_by=uid, source="manual")
+    log.info("api-admin tg=%s назначил администратора tg=%s", uid, tg)
+    return web.json_response({"ok": True, "telegram_id": tg, "is_admin": True})
+
+
+async def h_admin_remove_admin(request: web.Request) -> web.Response:
+    """POST /api/v1/admin/admins/remove {telegram_id} — снять админа, назначенного через панель. Только админ."""
+    uid = user_id_from_request(request)
+    deny = _admin_only(uid)
+    if deny:
+        return deny
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+    tg = _tg_id_from(body)
+    if tg is None:
+        return web.json_response({"error": "Нужен положительный telegram_id."}, status=400)
+    if tg in config.ADMIN_IDS:
+        return web.json_response(
+            {"error": "Этот админ задан в конфиге (ADMIN_IDS) — удалите его там."}, status=400
+        )
+    if tg == uid:
+        return web.json_response({"error": "Нельзя снять самого себя."}, status=400)
+    from db import remove_admin
+    if not await remove_admin(tg):
+        return web.json_response({"error": "Админ не найден."}, status=404)
+    log.info("api-admin tg=%s снял администратора tg=%s", uid, tg)
+    return web.json_response({"ok": True, "telegram_id": tg})
+
+
+async def h_admin_create_invite(request: web.Request) -> web.Response:
+    """POST /api/v1/admin/invites — создать одноразовую ссылку-приглашение в админы. Только админ."""
+    uid = user_id_from_request(request)
+    deny = _admin_only(uid)
+    if deny:
+        return deny
+    from db import create_admin_invite
+    inv = await create_admin_invite(created_by=uid)
+    url = bot_url(f"admin_{inv['code']}")
+    log.info("api-admin tg=%s создал инвайт-ссылку в админы %s", uid, inv["code"])
+    return web.json_response({"ok": True, "code": inv["code"], "url": url}, status=201)
+
+
+async def h_admin_revoke_invite(request: web.Request) -> web.Response:
+    """POST /api/v1/admin/invites/revoke {code} — отозвать неиспользованное приглашение. Только админ."""
+    uid = user_id_from_request(request)
+    deny = _admin_only(uid)
+    if deny:
+        return deny
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+    code = str(body.get("code") or "").strip()
+    if not code:
+        return web.json_response({"error": "Нужен code."}, status=400)
+    from db import revoke_admin_invite
+    if not await revoke_admin_invite(code):
+        return web.json_response({"error": "Приглашение не найдено или уже использовано."}, status=404)
+    log.info("api-admin tg=%s отозвал инвайт %s", uid, code)
+    return web.json_response({"ok": True, "code": code})
+
+
+# ---------- настройки экосистемы (ссылка PWDTT для Windows и др.) ----------
+
+def _valid_http_url(url: str) -> bool:
+    return (
+        0 < len(url) <= 2048
+        and (url.startswith("https://") or url.startswith("http://"))
+        and " " not in url
+    )
+
+
+async def h_admin_settings_get(request: web.Request) -> web.Response:
+    """GET /api/v1/admin/settings — текущие настройки (ссылка PWDTT Windows). Только админ."""
+    uid = user_id_from_request(request)
+    deny = _admin_only(uid)
+    if deny:
+        return deny
+    from db import get_setting
+    return web.json_response({
+        "app_windows_url": await app_windows_url_effective(),
+        "app_windows_url_custom": (await get_setting("app_windows_url")) or "",
+    })
+
+
+async def h_admin_settings_post(request: web.Request) -> web.Response:
+    """POST /api/v1/admin/settings {app_windows_url} — задать ссылку PWDTT (Windows) в подписке/инструкциях. Только админ."""
+    uid = user_id_from_request(request)
+    deny = _admin_only(uid)
+    if deny:
+        return deny
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+    url = str(body.get("app_windows_url") or "").strip()
+    if not url:
+        # пустое значение — сброс на дефолт из конфига
+        from db import conn
+        async with conn() as db:
+            await db.execute("DELETE FROM settings WHERE key = 'app_windows_url'")
+            await db.commit()
+        log.info("api-admin tg=%s сбросил ссылку PWDTT на дефолт", uid)
+        return web.json_response({"ok": True, "app_windows_url": await app_windows_url_effective(), "reset": True})
+    if not _valid_http_url(url):
+        return web.json_response({"error": "Ссылка должна начинаться с https:// или http:// (без пробелов)."}, status=400)
+    from db import set_setting
+    await set_setting("app_windows_url", url)
+    log.info("api-admin tg=%s задал ссылку PWDTT: %s", uid, url)
+    return web.json_response({"ok": True, "app_windows_url": url})
 
 
 def register_v1_routes(app: web.Application, prefix: str = "/api/v1") -> None:
@@ -441,3 +740,13 @@ def register_v1_routes(app: web.Application, prefix: str = "/api/v1") -> None:
     app.router.add_get(f"{prefix}/settings", h_settings_get)
     app.router.add_post(f"{prefix}/settings", h_settings_post)
     app.router.add_get(f"{prefix}/instructions", h_instructions)
+    app.router.add_get(f"{prefix}/admin", h_admin_overview)
+    app.router.add_post(f"{prefix}/admin/servers", h_admin_add_server)
+    app.router.add_get(f"{prefix}/admin/installs", h_admin_installs)
+    app.router.add_get(f"{prefix}/admin/admins", h_admin_admins)
+    app.router.add_post(f"{prefix}/admin/admins", h_admin_add_admin)
+    app.router.add_post(f"{prefix}/admin/admins/remove", h_admin_remove_admin)
+    app.router.add_post(f"{prefix}/admin/invites", h_admin_create_invite)
+    app.router.add_post(f"{prefix}/admin/invites/revoke", h_admin_revoke_invite)
+    app.router.add_get(f"{prefix}/admin/settings", h_admin_settings_get)
+    app.router.add_post(f"{prefix}/admin/settings", h_admin_settings_post)

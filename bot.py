@@ -95,6 +95,9 @@ from db import (
     get_renew_charge,
     mark_renew_charge,
     clear_renew_charge,
+    admin_ids_all,
+    consume_admin_invite,
+    is_admin_cached,
 )
 from payments import create_payment, fetch_payment, charge_saved_method
 from plans import ALL_PLANS_BY_ID, DEVICE_ADDONS, PLANS, TRIAL
@@ -278,13 +281,13 @@ def mention(user) -> str:
 
 
 def is_admin(user_id: int) -> bool:
-    return user_id in config.ADMIN_IDS
+    return user_id in config.ADMIN_IDS or is_admin_cached(user_id)
 
 
 async def notify_admin(text: str) -> None:
     if not bot:
         return
-    for admin_id in config.ADMIN_IDS:
+    for admin_id in admin_ids_all():
         try:
             await bot.send_message(admin_id, text, parse_mode=ParseMode.HTML)
         except Exception:
@@ -776,7 +779,7 @@ async def _links_section(client, pwd: str, sub_id: str | None = None) -> str | N
     except Exception:
         log.warning("платформенные ссылки недоступны, используем универсальную")
         pl = {}
-    labels = (("ios", "🍏 iOS"), ("android", "🤖 Android"))
+    labels = (("ios", "🍏 iOS"), ("android", "🤖 Android"), ("windows", "🪟 Windows"))
     parts = [f"<b>{label}</b>\n<code>{html.escape(pl[key])}</code>"
              for key, label in labels if pl.get(key)]
     if parts:
@@ -789,7 +792,7 @@ async def _links_section(client, pwd: str, sub_id: str | None = None) -> str | N
 
 
 async def links_json(client, pwd: str, sub_id: str | None = None) -> dict:
-    """Ссылки подключения в JSON для Mini App: {unified?, ios?, android?, universal?}."""
+    """Ссылки подключения в JSON для Mini App: {unified?, ios?, android?, windows?, universal?}."""
     out: dict = {}
     if config.SUB_DOMAIN and sub_id and redis_client:
         try:
@@ -806,6 +809,8 @@ async def links_json(client, pwd: str, sub_id: str | None = None) -> dict:
                 out["ios"] = pl["ios"]
             if pl.get("android"):
                 out["android"] = pl["android"]
+            if pl.get("windows"):
+                out["windows"] = pl["windows"]
         except Exception:
             pass
         if not out:
@@ -833,13 +838,16 @@ async def profile_text(telegram_id: int) -> str:
     days, hours = diff // 86400, (diff % 86400) // 3600
 
     used_bytes = 0
-    used_bytes = 0
+    devices_online = None
+    panel_max_devices = 0
     section = None
     try:
         client = await get_client(customer["server_id"])
         info = await client.get_user_info(customer["wdtt_password"])
         if info:
             used_bytes = int(info.get("up_bytes") or 0) + int(info.get("down_bytes") or 0)
+            devices_online = int(info.get("devices_online") or 0)
+            panel_max_devices = int(info.get("max_devices") or 0)
         section = await _links_section(client, customer["wdtt_password"], customer.get("sub_id"))
     except Exception:
         log.warning("не удалось получить ссылку для tg %s", telegram_id)
@@ -853,7 +861,11 @@ async def profile_text(telegram_id: int) -> str:
         limit_gb = plan.get("traffic_gb")
         traffic = (f"{fmt_bytes(used_bytes)} из {fmt_traffic(limit_gb)}" if limit_gb
                    else f"{fmt_bytes(used_bytes)} (безлимит)")
-        lines.append(f"📶 Трафик: {traffic} · Устройств: {plan.get('max_devices', 1)}")
+        dev_max = panel_max_devices or plan.get("max_devices", 1)
+        if devices_online is not None:
+            lines.append(f"📶 Трафик: {traffic} · Устройств онлайн: {devices_online} из {dev_max}")
+        else:
+            lines.append(f"📶 Трафик: {traffic} · Устройств: до {dev_max}")
     if section:
         lines.append(f"\n🔗 Ссылки для подключения:\n{section}")
     else:
@@ -876,6 +888,19 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         elif args[1].startswith("bind_"):
             code = args[1][5:]
             await _bind_site_code(message, code)
+        elif args[1].startswith("admin_"):
+            # ссылка-приглашение в админы: t.me/<bot>?start=admin_<code>
+            res = await consume_admin_invite(args[1][len("admin_"):], message.from_user.id)
+            if res == "ok":
+                await message.answer(
+                    "✅ Приглашение принято: вы назначены администратором K.O. Gateway.\n"
+                    "Админ-панель открывается в приложении (вкладка 🛠 Админ) и на сайте (/admin)."
+                )
+            elif res == "used":
+                await message.answer("⚠️ Эта ссылка-приглашение уже была использована.")
+            else:
+                await message.answer("⚠️ Недействительная ссылка-приглашение.")
+            return
         elif args[1].startswith("web_login_"):
             code = args[1][10:]
             await _web_login_confirm(message, code)
@@ -901,7 +926,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
                 text="🚀 Открыть приложение",
                 web_app=WebAppInfo(url=config.MINIAPP_URL),
             )],
-            ([InlineKeyboardButton(text="🌐 Сайт K.O. Gateway (войти автоматически)", url=site_url)]
+            ([InlineKeyboardButton(text="🌐 Сайт K.O. Gateway", url=site_url)]
              if site_url else []),
         ])
         await message.answer(

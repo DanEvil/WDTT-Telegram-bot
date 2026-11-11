@@ -46,7 +46,7 @@ class _FakeConn:
 # ---------- инструкции ----------
 
 async def test_instructions_api_returns_screenshots():
-    """API отдаёт пошаговые инструкции со скриншотами для Android и iOS."""
+    """API отдаёт пошаговые инструкции со скриншотами для Android, iOS и Windows."""
     app = web.Application()
     api.register_v1_routes(app)
     from aiohttp.test_utils import TestClient, TestServer
@@ -57,11 +57,14 @@ async def test_instructions_api_returns_screenshots():
         assert resp.status == 200
         data = await resp.json()
         keys = [p["key"] for p in data["platforms"]]
-        assert "android" in keys and "ios" in keys
+        assert "android" in keys and "ios" in keys and "windows" in keys
+        win = next(p for p in data["platforms"] if p["key"] == "windows")
+        assert win["app_url"] and "pwdtt" in win["app_url"].lower()
         for p in data["platforms"]:
             assert p["steps"], f"у {p['key']} нет шагов"
             for s in p["steps"]:
-                assert s["img"].startswith("/static/instr/")
+                if s["img"]:  # у Windows шагов может не быть скриншотов
+                    assert s["img"].startswith("/static/instr/")
                 assert s["caption"]
     finally:
         await client.close()
@@ -74,6 +77,8 @@ def test_instruction_assets_exist():
     base = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static", "instr")
     for p in instr.PLATFORMS.values():
         for img, _cap in p["steps"]:
+            if not img:
+                continue
             path = os.path.join(base, img)
             assert os.path.exists(path), f"нет файла {path}"
             assert os.path.getsize(path) > 1000
@@ -139,15 +144,12 @@ async def test_login_auto_rejects_expired(monkeypatch):
 # ---------- профиль: без истории платежей и ссылок ----------
 
 async def test_profile_has_no_payment_history(monkeypatch):
-    """В профиле сайта нет истории платежей и строки «На главную | Выход»."""
+    """В профиле сайта нет истории платежей, строки «На главную | Выход» и автопродления."""
     async def _noop(*a, **kw):
         return None
 
     async def _get_customer(sub_id):
         return None
-
-    async def _renew(tg_id):
-        return {"auto_renew": False, "notify_hours": 0, "has_payment_method": False}
 
     async def _ref_count(tg_id):
         return 0
@@ -160,7 +162,6 @@ async def test_profile_has_no_payment_history(monkeypatch):
     monkeypatch.setattr(web_app, "init_db", _noop)
     monkeypatch.setattr(web_app, "db_conn", lambda: _FakeConn())
     monkeypatch.setattr(web_app, "get_customer", _get_customer)
-    monkeypatch.setattr(web_app, "get_auto_renew_settings", _renew)
     monkeypatch.setattr(web_app, "get_referrals_count", _ref_count)
     monkeypatch.setattr(web_app, "get_site_referrals_count", _site_ref_count)
 
@@ -168,13 +169,16 @@ async def test_profile_has_no_payment_history(monkeypatch):
     assert resp.status == 200
     assert "История платежей" not in resp.text
     assert "На главную</a> |" not in resp.text
+    assert "Автопродление" not in resp.text
 
 
 # ---------- страница инструкции на сайте ----------
 
 async def test_site_instruction_has_screenshots():
-    """На странице инструкции сайта есть скриншоты и нет ссылки «Открыть бота»."""
+    """На странице инструкции сайта есть скриншоты, блок Windows (PWDTT), нет ссылки «Открыть бота»."""
     resp = await web_app.handle_instruction(_Req())
     assert resp.status == 200
     assert "/static/instr/" in resp.text
     assert "Открыть бота" not in resp.text
+    assert "PWDTT" in resp.text
+    assert "🪟 Windows" in resp.text

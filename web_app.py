@@ -49,8 +49,10 @@ from db import (
     get_referrals_count, get_site_user_by_email,
     generate_referral_code, add_site_referral, get_site_referrals_count,
     get_site_user_by_referral_code,
-    get_auto_renew_settings, set_auto_renew,
     create_login_request, confirm_login_request, get_login_request, mark_login_request_used,
+    is_admin_cached, list_admins, list_admin_invites,
+    add_admin, remove_admin, create_admin_invite, revoke_admin_invite,
+    get_app_windows_url, set_setting,
 )
 from payments import create_payment, fetch_payment
 from plans import PLANS, TRIAL, ALL_PLANS_BY_ID
@@ -85,6 +87,7 @@ def _links_html(links: dict) -> str:
         ("unified", "🔗 Единая ссылка подписки"),
         ("ios", "🍏 iOS"),
         ("android", "🤖 Android"),
+        ("windows", "🪟 Windows — PWDTT"),
         ("universal", "🔗 Универсальная ссылка"),
     )
     rows = []
@@ -213,7 +216,7 @@ def _require_site_session(request: web.Request) -> dict:
     return s
 
 def _is_admin(telegram_id: int) -> bool:
-    return telegram_id in ADMIN_IDS
+    return telegram_id in ADMIN_IDS or is_admin_cached(telegram_id)
 
 # ---------- вспомогательные HTML ----------
 
@@ -279,6 +282,7 @@ def _csrf_check_telegram(data: dict) -> bool:
 async def handle_index(request: web.Request) -> web.Response:
     session = _get_session(request)
     plans = await list_plans() or list(PLANS)
+    win_url = await get_app_windows_url()
     plans_html = '<div class="plans">'
     for p in plans:
         plans_html += f"""
@@ -322,7 +326,7 @@ async def handle_index(request: web.Request) -> web.Response:
         <a class="app-link" href="{APP_IOS_TESTFLIGHT_URL}" target="_blank" rel="noopener">
           <span class="app-ico">🍎</span><span>iOS<br><small>TestFlight → <a href="{APP_IOS_JOIN_URL}" target="_blank" rel="noopener">приглашение</a></small></span>
         </a>
-        <a class="app-link" href="{APP_WINDOWS_URL}" target="_blank" rel="noopener">
+        <a class="app-link" href="{win_url}" target="_blank" rel="noopener">
           <span class="app-ico">🪟</span><span>Windows<br><small>скачать PWDTT</small></span>
         </a>
       </div>
@@ -576,6 +580,102 @@ async def handle_login_auto(request: web.Request) -> web.Response:
     return await _telegram_login_by_code(code, max_age=600)
 
 
+async def _telegram_user_site_login(telegram_id: int, username: str | None, first_name: str) -> dict:
+    """Находит или создаёт site_user по telegram_id + запись в customers.
+
+    Возвращает поля для set_site_session. Общее для Login Widget и автовхода из мини-аппа.
+    """
+    await init_db()
+    async with db_conn() as db:
+        await db.execute(
+            "INSERT INTO customers (telegram_id, username, expires_at, plan_id, server_id, created_at) "
+            "VALUES (?, ?, 0, NULL, NULL, ?) "
+            "ON CONFLICT(telegram_id) DO UPDATE SET username=COALESCE(excluded.username, customers.username)",
+            (telegram_id, username or first_name or "", int(time.time())),
+        )
+        cur = await db.execute("SELECT * FROM site_users WHERE telegram_id = ?", (telegram_id,))
+        site_user = await cur.fetchone()
+        if not site_user:
+            # создаём site_user без пароля — пользователь сможет задать пароль позже
+            referral_code = generate_referral_code()
+            cur = await db.execute(
+                "INSERT INTO site_users (email, username, password_hash, telegram_id, referral_code, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (f"tg_{telegram_id}@wdtt.local", username or first_name or str(telegram_id), "",
+                 telegram_id, referral_code, int(time.time())),
+            )
+            site_user_id = cur.lastrowid
+        else:
+            site_user_id = site_user["id"]
+    return {
+        "id": site_user_id,
+        "email": None,
+        "username": username or first_name or str(telegram_id),
+        "telegram_id": telegram_id,
+    }
+
+
+_TG_LOGIN_PAGE = """<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Вход через Telegram</title>
+<link rel="stylesheet" href="/static/style.css">
+</head><body><main class="auth-wrap"><div class="card" style="text-align:center">
+<h2>Вход через Telegram</h2>
+<p class="note" id="msg">Проверяем данные…</p>
+<p><a href="/login">Войти другим способом</a></p>
+</div></main>
+<script>
+(async () => {
+  const msg = document.getElementById('msg');
+  try {
+    // initData передаём в фрагменте URL (#init=...) — она не попадает в логи сервера
+    const m = location.hash.replace(/^#/, '').match(/(?:^|&)init=([^&]+)/);
+    const init = m ? decodeURIComponent(m[1]) : '';
+    if (!init) { msg.textContent = 'Нет данных Telegram — откройте сайт из приложения.'; return; }
+    const r = await fetch('/tg-login/do', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({initData: init})
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.ok) { location.replace(d.redirect || '/profile'); }
+    else { msg.textContent = d.error || 'Не удалось войти — откройте сайт заново из приложения.'; }
+  } catch (e) {
+    msg.textContent = 'Ошибка сети. Попробуйте ещё раз.';
+  }
+})();
+</script></body></html>
+"""
+
+
+async def handle_tg_login_page(request: web.Request) -> web.Response:
+    """GET /tg-login — автовход на сайт из мини-аппа (ссылка вида /tg-login#init=<initData>)."""
+    if _get_site_session(request):
+        raise web.HTTPFound("/profile")
+    return web.Response(text=_TG_LOGIN_PAGE, content_type="text/html")
+
+
+async def handle_tg_login_do(request: web.Request) -> web.Response:
+    """POST /tg-login/do {initData} — валидация initData токеном бота и выдача cookie-сессии сайта."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+    init_data = str(body.get("initData") or "")
+    from api import validate_init_data
+    user = validate_init_data(init_data, TELEGRAM_TOKEN)
+    if not user or not user.get("id"):
+        log.info("tg-login: initData не прошёл валидацию")
+        return web.json_response({"error": "Недействительные данные Telegram."}, status=403)
+    telegram_id = int(user["id"])
+    sess = await _telegram_user_site_login(telegram_id, user.get("username"), user.get("first_name") or "")
+    log.info("tg-login: автовход tg=%s (site_user #%s)", telegram_id, sess["id"])
+    resp = web.json_response({"ok": True, "redirect": "/profile"})
+    set_site_session(resp, sess)
+    return resp
+
+
 async def handle_auth_telegram(request: web.Request) -> web.Response:
     """Приём данных от Telegram Login Widget."""
     data = dict(request.query)
@@ -586,37 +686,9 @@ async def handle_auth_telegram(request: web.Request) -> web.Response:
     username = data.get("username")
     first_name = data.get("first_name", "")
 
-    await init_db()
-    # создаём/обновляем покупателя в customers (тг-пользователь)
-    async with db_conn() as db:
-        await db.execute(
-            "INSERT INTO customers (telegram_id, username, expires_at, plan_id, server_id, created_at) "
-            "VALUES (?, ?, 0, NULL, NULL, ?) "
-            "ON CONFLICT(telegram_id) DO UPDATE SET username=COALESCE(excluded.username, customers.username)",
-            (telegram_id, username or first_name or "", int(time.time())),
-        )
-        # ищем или создаём site_user, привязанный к этому telegram_id
-        cur = await db.execute("SELECT * FROM site_users WHERE telegram_id = ?", (telegram_id,))
-        site_user = await cur.fetchone()
-        if not site_user:
-            # создаём site_user без пароля — пользователь сможет задать пароль позже
-            referral_code = generate_referral_code()
-            cur = await db.execute(
-                "INSERT INTO site_users (email, username, password_hash, telegram_id, referral_code, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (f"tg_{telegram_id}@wdtt.local", username or first_name or str(telegram_id), "", telegram_id, referral_code, int(time.time())),
-            )
-            site_user_id = cur.lastrowid
-        else:
-            site_user_id = site_user["id"]
-
+    sess = await _telegram_user_site_login(telegram_id, username, first_name)
     response = web.HTTPFound("/profile")
-    set_site_session(response, {
-        "id": site_user_id,
-        "email": None,
-        "username": username or first_name or str(telegram_id),
-        "telegram_id": telegram_id,
-    })
+    set_site_session(response, sess)
     return response
 
 async def _ensure_bind_code(site_user_id: int) -> str:
@@ -679,6 +751,8 @@ async def handle_profile(request: web.Request) -> web.Response:
         # ссылки подключения и трафик из панели (как в мини-приложении)
         links: dict = {}
         used_bytes = 0
+        devices_online = 0
+        panel_max_devices = 0
         total_gb = int(plan.get("traffic_gb") or 0) if plan else 0
         try:
             sid = customer["server_id"] or await pick_least_loaded_server_id()
@@ -690,10 +764,13 @@ async def handle_profile(request: web.Request) -> web.Response:
                 links = await _bot.links_json(client, customer["wdtt_password"], customer.get("sub_id"))
                 info = await client.get_user_info(customer["wdtt_password"]) or {}
                 used_bytes = int(info.get("up_bytes") or 0) + int(info.get("down_bytes") or 0)
+                devices_online = int(info.get("devices_online") or 0)
+                panel_max_devices = int(info.get("max_devices") or 0)
                 await client.close()
         except Exception as e:
             log.warning("не удалось получить ссылки подключения: %s", e)
         links_html = _links_html(links)
+        win_url = await get_app_windows_url()
 
         # прогресс-бар трафика
         traffic_html = ""
@@ -707,7 +784,7 @@ async def handle_profile(request: web.Request) -> web.Response:
                 traffic_html = f"""
           <p>📶 Трафик: <b>{fmt_bytes(used_bytes)}</b> (безлимит)</p>"""
             traffic_html += f"""
-          <p>Устройств: до {plan.get('max_devices', 1)}</p>"""
+          <p>Устройства: {f'{devices_online} онлайн из {panel_max_devices or plan.get("max_devices", 1)}' if active else f'до {panel_max_devices or plan.get("max_devices", 1)}'}</p>"""
 
         badge = "ok" if active else "err"
         status_text = "Активна" if active else "Истекла"
@@ -721,55 +798,18 @@ async def handle_profile(request: web.Request) -> web.Response:
           <h4>🔗 Ссылка для подключения:</h4>
           {links_html}
           <p style="color:var(--muted);font-size:.85rem">Скопируйте ссылку в приложение WDTT (Android / iOS / Windows).</p>
-          <a href="{APP_WINDOWS_URL}" class="btn secondary" target="_blank" rel="noopener">🪟 Подключить на Windows — скачать PWDTT</a>
+          <a href="{win_url}" class="btn secondary" target="_blank" rel="noopener">🪟 Подключить на Windows — скачать PWDTT</a>
           <a href="/buy/{customer['plan_id']}" class="btn secondary">Продлить подписку</a>
         </div>
         """
 
-    # ----- автопродление (только при привязанном Telegram) -----
-    if tg_id:
-        ar = await get_auto_renew_settings(tg_id)
-        month_plan = await get_plan("month") or ALL_PLANS_BY_ID.get("month") or {}
-        month_price = fmt_price(month_plan.get("price") or 0)
-        notify_opts = "".join(
-            f"<option value='{h}'{' selected' if h == ar['notify_hours'] else ''}>"
-            f"{'Не уведомлять' if h == 0 else f'За {h} ч.'}</option>"
-            for h in (0, 1, 3, 6, 12, 24, 48)
-        )
-        # магазин ЮKassa без рекуррентов -> карта не сохранится, автопродление невозможно
-        from payments import recurring_supported
-        no_recurring = recurring_supported() is False
-        renew_note = (
-            "<p style='color:var(--err);font-size:.85rem'>⚠️ Автопродление сейчас недоступно: "
-            "платёжный шлюз не поддерживает повторные списания для этого магазина, карта не сохраняется. "
-            "Оплата и продление вручную работают.</p>"
-            if no_recurring else
-            ("<p style='color:var(--warn);font-size:.85rem'>⚠️ Сначала оплатите любой тариф картой через ЮKassa — карта сохранится для автопродления.</p>"
-             if (ar['auto_renew'] and not ar['has_payment_method']) else '')
-        )
-        body += f"""
-    <div class="card" id="settings">
-      <h3>🔄 Автопродление подписки</h3>
-      <form method="post" action="/settings">
-        <label class="check">
-          <input type="checkbox" name="auto_renew" value="1"{' checked' if ar['auto_renew'] else ''}{' disabled' if no_recurring else ''}>
-          <span>Автоматически продлевать подписку на <b>1 месяц (30 дней)</b> —
-            при окончании спишем <b>{month_price} ₽</b> с сохранённой карты ЮKassa.</span>
-        </label>
-        {renew_note}
-        <h4 style="margin-top:1rem">🔔 Уведомление о списании</h4>
-        <label class="check">
-          <input type="checkbox" id="notify_on" name="notify_on" value="1"{' checked' if ar['notify_hours'] > 0 else ''}
-                 onchange="document.getElementById('notify_hours').disabled = !this.checked">
-          <span>Уведомлять меня о предстоящем списании средств</span>
-        </label>
-        <select id="notify_hours" name="notify_hours" style="margin-top:.5rem;max-width:280px"{' disabled' if ar['notify_hours'] == 0 else ''}>
-          {notify_opts}
-        </select>
-        <p style="margin-top:1rem"><button class="btn" type="submit">Сохранить настройки</button></p>
-      </form>
-      <p style="color:var(--muted);font-size:.82rem">Автопродление всегда добавляет только 30 дней по цене месячного тарифа. Отключить можно в любой момент.</p>
-    </div>
+    # ----- ссылка на админ-панель (только администраторам) -----
+    if tg_id and _is_admin(tg_id):
+        body += """
+        <div class="card">
+          <h3>🛠 Администрирование</h3>
+          <p><a class="btn secondary" href="/admin">🛠 Админ-панель: статистика, серверы, автоустановка панелей</a></p>
+        </div>
         """
 
     # ----- привязка Telegram -----
@@ -979,8 +1019,11 @@ async def handle_yookassa_webhook(request: web.Request) -> web.Response:
 async def handle_instruction(request: web.Request) -> web.Response:
     import instructions as instr
 
+    win_url = await get_app_windows_url()
+    plats = instr.platforms_with_windows_app(win_url)
+
     def platform_html(key: str) -> str:
-        p = instr.PLATFORMS[key]
+        p = plats[key]
         links = ""
         if p.get("app_url"):
             links += (f"<p><a class='btn' href='{p['app_url']}' target='_blank' rel='noopener'>"
@@ -988,9 +1031,10 @@ async def handle_instruction(request: web.Request) -> web.Response:
         for url, label in p.get("links", []):
             links += f"<p><a href='{url}' target='_blank' rel='noopener'>{html.escape(label)}</a></p>"
         steps = "".join(
-            f"<figure class='instr-step'><img src='{instr.step_img(img)}' alt='{html.escape(cap)}' loading='lazy'>"
-            f"<figcaption>{html.escape(cap)}</figcaption></figure>"
-            for img, cap in p["steps"]
+            (f"<figure class='instr-step'><img src='{instr.step_img(img)}' alt='{html.escape(cap)}' loading='lazy'>"
+             f"<figcaption>{html.escape(cap)}</figcaption></figure>" if img
+             else f"<p class='instr-text'><b>{i}.</b> {html.escape(cap)}</p>")
+            for i, (img, cap) in enumerate(p["steps"], 1)
         )
         return f"<div class='card'><h3>{p['title']}</h3><p>{p['intro']}</p>{links}{steps}</div>"
 
@@ -1005,8 +1049,8 @@ async def handle_instruction(request: web.Request) -> web.Response:
         <a class="app-link" href="{APP_IOS_TESTFLIGHT_URL}" target="_blank" rel="noopener">
           <span class="app-ico">🍎</span><span>iOS<br><small>TestFlight → <a href="{APP_IOS_JOIN_URL}" target="_blank" rel="noopener">приглашение</a></small></span>
         </a>
-        <a class="app-link" href="{APP_WINDOWS_URL}" target="_blank" rel="noopener">
-          <span class="app-ico">🪟</span><span>Windows<br><small>qWDTT</small></span>
+        <a class="app-link" href="{win_url}" target="_blank" rel="noopener">
+          <span class="app-ico">🪟</span><span>Windows<br><small>PWDTT</small></span>
         </a>
       </div>
     </div>
@@ -1017,6 +1061,7 @@ async def handle_instruction(request: web.Request) -> web.Response:
     </div>
     {platform_html("android")}
     {platform_html("ios")}
+    {platform_html("windows")}
     <div class="card">
       <h3>3. Подключитесь</h3>
       <p>Нажмите «Подключить». Готово — весь трафик идёт через защищённый туннель.</p>
@@ -1039,9 +1084,45 @@ async def handle_admin(request: web.Request) -> web.Response:
         f"<tr><td>#{i['id']}</td><td>{html.escape(i['name'])}</td><td>{html.escape(i['host'])}</td>"
         f"<td>{'⏳ выполняется' if i['status'] == 'running' else ('✅ готово' if i['status'] == 'done' else '⚠️ ошибка')}</td>"
         f"<td>{html.escape(i.get('detail') or '')}</td></tr>"
-        for i in sorted(_installs.values(), key=lambda x: x["id"], reverse=True)[:10]
+        for i in admin_ops.list_installs()
     ) or "<tr><td colspan='5'>—</td></tr>"
-    running = any(i["status"] == "running" for i in _installs.values())
+    running = admin_ops.any_install_running()
+    win_url = await get_app_windows_url()
+    db_admins = await list_admins()
+    have = {a["telegram_id"] for a in db_admins}
+    admins_list = [
+        (a["telegram_id"], a["source"], a.get("added_by"), a["created_at"]) for a in db_admins
+    ]
+    for env_id in sorted(set(ADMIN_IDS) - have):
+        admins_list.append((env_id, "env", None, 0))
+    admins_list.sort(key=lambda r: r[0])
+    src_label = {"env": "конфиг", "manual": "по ID", "invite": "по ссылке"}
+    admins_rows = "".join(
+        f"<tr><td>{tg}</td><td>{src_label.get(src, src)}</td>"
+        f"<td>{'—' if not added_by else added_by}</td>"
+        + (
+            f"<td><form method='post' action='/admin/admins/remove' style='display:inline'>"
+            f"<input type='hidden' name='telegram_id' value='{tg}'>"
+            f"<button class='btn small' type='submit'>снять</button></form></td>"
+            if src != "env" and tg != tg_id else "<td>—</td>"
+        )
+        + "</tr>"
+        for tg, src, added_by, _ts in admins_list
+    ) or "<tr><td colspan='4'>—</td></tr>"
+    invites = await list_admin_invites()
+    invites_rows = "".join(
+        f"<tr><td><code>{html.escape(_bot_link(f'admin_{i['code']}'))}</code></td>"
+        f"<td>{'✅ использовано' + (f' (tg {i['used_by']})' if i.get('used_by') else '') if i['used'] else '⏳ активно'}</td>"
+        + (
+            ""
+            if i["used"]
+            else f"<td><form method='post' action='/admin/invites/revoke' style='display:inline'>"
+            f"<input type='hidden' name='code' value='{html.escape(i['code'])}'>"
+            f"<button class='btn small' type='submit'>отозвать</button></form></td>"
+        )
+        + "</tr>"
+        for i in invites
+    ) or "<tr><td colspan='3'>—</td></tr>"
     body = f"""
     <h2>🛠 Админ-панель</h2>
     <p>Всего клиентов: <b>{s['customers']}</b> | Активных: <b>{s['active']}</b></p>
@@ -1071,6 +1152,33 @@ async def handle_admin(request: web.Request) -> web.Response:
       <tr><th>ID</th><th>Имя</th><th>Хост</th><th>Статус</th><th>Детали</th></tr>
       {installs_rows}
     </table>
+
+    <h3 id="admins">👮 Администраторы</h3>
+    <table>
+      <tr><th>Telegram ID</th><th>Источник</th><th>Кем добавлен</th><th></th></tr>
+      {admins_rows}
+    </table>
+    <form method="post" action="/admin/admins/add" class="card">
+      <p><input name="telegram_id" inputmode="numeric" placeholder="Telegram ID нового админа" required style="width:100%"></p>
+      <p><button class="btn" type="submit">➕ Назначить администратора по ID</button></p>
+    </form>
+    <form method="post" action="/admin/invites/create" class="card">
+      <p><button class="btn" type="submit">🔗 Создать одноразовую ссылку-приглашение</button></p>
+      <p class="note">Отправьте ссылку человеку — открыв её в боте (t.me/бот?start=admin_…), он станет администратором. Ссылка сработает один раз.</p>
+    </form>
+    <h4>Ссылки-приглашения:</h4>
+    <table>
+      <tr><th>Ссылка</th><th>Статус</th><th></th></tr>
+      {invites_rows}
+    </table>
+
+    <h3 id="settings">⚙️ Настройки</h3>
+    <form method="post" action="/admin/settings/windows" class="card">
+      <p>🪟 Ссылка на приложение <b>PWDTT</b> (Windows) — попадает в подписку, инструкции и приложения на сайте и в мини-аппе:</p>
+      <p><input name="app_windows_url" value="{html.escape(win_url)}" style="width:100%" placeholder="https://…/pwdtt-client-windows-amd64.exe"></p>
+      <p><button class="btn" type="submit">💾 Сохранить ссылку PWDTT</button>
+         <span class="note">Оставьте пустым, чтобы вернуть ссылку из конфига по умолчанию.</span></p>
+    </form>
     <p><a href='/'>На главную</a></p>
     """
     page = _page("Админ-панель", body, session)
@@ -1081,34 +1189,10 @@ async def handle_admin(request: web.Request) -> web.Response:
 
 
 # ---------- админ: автоустановка сервера по SSH (фоном) ----------
+# Логика и состояние установок — в общем модуле admin_ops (общее для сайта и мини-аппа).
+import admin_ops
 
-_installs: dict[int, dict] = {}
-_install_seq = 0
-
-
-async def _run_install(install_id: int, name: str, host: str, ssh_port: int, ssh_user: str, ssh_password: str) -> None:
-    """Фоновая установка панели WDTT на новый сервер через SSH."""
-    from server_setup import SetupError, deploy_server
-    from db import list_vk_accounts
-
-    rec = _installs[install_id]
-    try:
-        accounts = await list_vk_accounts()
-        vk_cookies = accounts[0]["cookies"] if accounts else None
-        result = await deploy_server(
-            host=host, ssh_port=ssh_port, ssh_user=ssh_user,
-            ssh_password=ssh_password, name=name, vk_cookies=vk_cookies,
-        )
-        rec.update(status="done", detail=f"Сервер #{result['id']} добавлен: {result['base_url']} | логин панели: {result['panel_username']} | пароль: {result['panel_password']}")
-        log.info("site-admin: сервер %s (%s) установлен как #%s", name, host, result["id"])
-    except SetupError as e:
-        rec.update(status="error", detail=str(e)[:1500])
-        log.warning("site-admin: установка %s (%s) не удалась: %s", name, host, e)
-    except Exception as e:
-        rec.update(status="error", detail=str(e)[:1500])
-        log.exception("site-admin: установка %s (%s)", name, host)
-    finally:
-        rec["ssh_password"] = None  # пароль SSH больше не храним
+_installs = admin_ops._installs  # обратная совместимость: тот же словарь, что и в admin_ops
 
 
 def _field(data, key: str) -> str:
@@ -1137,40 +1221,115 @@ async def handle_admin_install_server(request: web.Request) -> web.Response:
             text=_page("Ошибка", "<p class='err'>Заполните все поля: имя, IP, порт SSH (1–65535), логин и пароль.</p>"),
             status=400,
         )
-    global _install_seq
-    _install_seq += 1
-    iid = _install_seq
-    _installs[iid] = {
-        "id": iid, "name": name, "host": host, "status": "running",
-        "detail": "", "started": int(time.time()), "ssh_password": None,
-    }
-    asyncio.create_task(_run_install(iid, name, host, ssh_port, ssh_user, ssh_password))
+    admin_ops.start_install(name, host, ssh_port, ssh_user, ssh_password)
     log.info("site-admin tg=%s запустил автоустановку сервера «%s» (%s:%s, user=%s)", tg_id, name, host, ssh_port, ssh_user)
     raise web.HTTPFound("/admin#installs")
 
-async def handle_settings_post(request: web.Request) -> web.Response:
-    """POST /settings — сохранение галочек автопродления и уведомления (нужен привязанный Telegram)."""
+
+def _admin_guard(request: web.Request):
+    """(session, tg_id) если это админ, иначе None."""
     session = _require_site_session(request)
     tg_id = session.get("telegram_id")
-    if not tg_id:
-        raise web.HTTPFound("/bind-telegram")
-    data = await request.post()
-    # если магазин не поддерживает рекурренты — автопродление технически невозможно,
-    # не даём включить его даже в обход UI
-    from payments import recurring_supported
-    if recurring_supported() is False:
-        raise web.HTTPFound("/profile#settings")
-    auto_renew = data.get("auto_renew") == "1"
-    notify_on = data.get("notify_on") == "1"
-    try:
-        notify_hours = int(str(data.get("notify_hours") or "0") or 0) if notify_on else 0
-    except (TypeError, ValueError):
-        notify_hours = 0
-    await set_auto_renew(tg_id, auto_renew, notify_hours)
-    log.info("site: tg %s установил auto_renew=%s notify_hours=%s", tg_id, auto_renew, notify_hours)
-    resp = web.HTTPFound("/profile#settings")
-    return resp
+    if not tg_id or not _is_admin(tg_id):
+        return None
+    return session, tg_id
 
+
+async def _admin_forbidden() -> web.Response:
+    return web.Response(text=_page("Ошибка", "<p class='err'>Доступ только для администратора.</p>"), status=403)
+
+
+async def handle_admin_add_admin(request: web.Request) -> web.Response:
+    """POST /admin/admins/add — назначить админа по Telegram ID."""
+    guard = _admin_guard(request)
+    if not guard:
+        return await _admin_forbidden()
+    _, tg_id = guard
+    data = await request.post()
+    try:
+        new_admin = int(_field(data, "telegram_id").strip())
+    except ValueError:
+        new_admin = 0
+    if new_admin <= 0:
+        return web.Response(text=_page("Ошибка", "<p class='err'>Нужен положительный Telegram ID.</p>"), status=400)
+    await add_admin(new_admin, added_by=tg_id, source="manual")
+    log.info("site-admin tg=%s назначил администратора tg=%s", tg_id, new_admin)
+    raise web.HTTPFound("/admin#admins")
+
+
+async def handle_admin_remove_admin(request: web.Request) -> web.Response:
+    """POST /admin/admins/remove — снять админа, назначенного через панель."""
+    guard = _admin_guard(request)
+    if not guard:
+        return await _admin_forbidden()
+    _, tg_id = guard
+    data = await request.post()
+    try:
+        target = int(_field(data, "telegram_id").strip())
+    except ValueError:
+        target = 0
+    if target <= 0:
+        return web.Response(text=_page("Ошибка", "<p class='err'>Нужен положительный Telegram ID.</p>"), status=400)
+    if target in ADMIN_IDS:
+        return web.Response(text=_page("Ошибка", "<p class='err'>Этот админ задан в конфиге (ADMIN_IDS) — удалите его там.</p>"), status=400)
+    if target == tg_id:
+        return web.Response(text=_page("Ошибка", "<p class='err'>Нельзя снять самого себя.</p>"), status=400)
+    if not await remove_admin(target):
+        return web.Response(text=_page("Ошибка", "<p class='err'>Админ не найден.</p>"), status=404)
+    log.info("site-admin tg=%s снял администратора tg=%s", tg_id, target)
+    raise web.HTTPFound("/admin#admins")
+
+
+async def handle_admin_create_invite(request: web.Request) -> web.Response:
+    """POST /admin/invites/create — создать одноразовую ссылку-приглашение в админы."""
+    guard = _admin_guard(request)
+    if not guard:
+        return await _admin_forbidden()
+    _, tg_id = guard
+    inv = await create_admin_invite(created_by=tg_id)
+    log.info("site-admin tg=%s создал инвайт-ссылку в админы %s (%s)", tg_id, inv["code"], _bot_link(f"admin_{inv['code']}"))
+    raise web.HTTPFound("/admin#admins")
+
+
+async def handle_admin_revoke_invite(request: web.Request) -> web.Response:
+    """POST /admin/invites/revoke — отозвать неиспользованное приглашение."""
+    guard = _admin_guard(request)
+    if not guard:
+        return await _admin_forbidden()
+    _, tg_id = guard
+    data = await request.post()
+    code = _field(data, "code").strip()
+    if not code:
+        return web.Response(text=_page("Ошибка", "<p class='err'>Нужен код приглашения.</p>"), status=400)
+    if not await revoke_admin_invite(code):
+        return web.Response(text=_page("Ошибка", "<p class='err'>Приглашение не найдено или уже использовано.</p>"), status=404)
+    log.info("site-admin tg=%s отозвал инвайт %s", tg_id, code)
+    raise web.HTTPFound("/admin#admins")
+
+
+async def handle_admin_settings_windows(request: web.Request) -> web.Response:
+    """POST /admin/settings/windows — задать ссылку PWDTT (Windows) из админ-панели сайта."""
+    guard = _admin_guard(request)
+    if not guard:
+        return await _admin_forbidden()
+    _, tg_id = guard
+    data = await request.post()
+    url = _field(data, "app_windows_url").strip()
+    from api import _valid_http_url
+    if url and not _valid_http_url(url):
+        return web.Response(
+            text=_page("Ошибка", "<p class='err'>Ссылка должна начинаться с https:// или http:// (без пробелов).</p>"),
+            status=400,
+        )
+    if url:
+        await set_setting("app_windows_url", url)
+        log.info("site-admin tg=%s задал ссылку PWDTT: %s", tg_id, url)
+    else:
+        async with db_conn() as db:
+            await db.execute("DELETE FROM settings WHERE key = 'app_windows_url'")
+            await db.commit()
+        log.info("site-admin tg=%s сбросил ссылку PWDTT на дефолт", tg_id)
+    raise web.HTTPFound("/admin#settings")
 
 async def handle_logout(request: web.Request) -> web.Response:
     response = web.HTTPFound("/")
@@ -1362,12 +1521,13 @@ def make_app() -> web.Application:
     app.router.add_post("/login", handle_login_post)
     app.router.add_get("/login/telegram", handle_login_telegram)
     app.router.add_get("/login/auto", handle_login_auto)
+    app.router.add_get("/tg-login", handle_tg_login_page)
+    app.router.add_post("/tg-login/do", handle_tg_login_do)
     app.router.add_get("/auth/telegram/confirm", handle_login_confirm)
     app.router.add_get("/auth/telegram", handle_auth_telegram)
     app.router.add_get("/bind-telegram", handle_bind_telegram)
     app.router.add_get("/r/{code}", handle_referral_link)
     app.router.add_get("/profile", handle_profile)
-    app.router.add_post("/settings", handle_settings_post)
     app.router.add_get("/buy/{plan_id}", handle_buy)
     app.router.add_get("/pay/success", handle_pay_success)
     app.router.add_get("/pay/cancel", handle_pay_cancel)
@@ -1375,6 +1535,11 @@ def make_app() -> web.Application:
     app.router.add_get("/instruction", handle_instruction)
     app.router.add_get("/admin", handle_admin)
     app.router.add_post("/admin/server/install", handle_admin_install_server)
+    app.router.add_post("/admin/admins/add", handle_admin_add_admin)
+    app.router.add_post("/admin/admins/remove", handle_admin_remove_admin)
+    app.router.add_post("/admin/invites/create", handle_admin_create_invite)
+    app.router.add_post("/admin/invites/revoke", handle_admin_revoke_invite)
+    app.router.add_post("/admin/settings/windows", handle_admin_settings_windows)
     app.router.add_get("/logout", handle_logout)
     app.router.add_get("/{tail:.*}", handle_404)
 

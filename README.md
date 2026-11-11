@@ -175,6 +175,20 @@ docker compose up -d --build
 
 API для фронтенда: `POST /api/auth`, `GET /api/me`, `GET /api/plans`, `POST /api/trial`, `POST /api/pay/yookassa`, `POST /api/pay/stars`, `GET /api/referrals`, `POST /api/check_payment`.
 
+## Мобильные приложения (Android / iOS)
+
+По мотивам Mini App сделаны нативные оболочки экосистемы: `Android/` и `IOS/`.
+Обе открывают сайт `https://auth.ko-gateway.ru` (вход через Telegram, профиль,
+ссылки подключения, оплата, рефералы, админ-панель) и перехватывают ссылки
+`wdtt://` / `qwdtt://` — открывают внешний клиент WDTT или копируют ссылку в буфер.
+
+| Папка | Стек | Универсальность | Сборка |
+|---|---|---|---|
+| `Android/` | Kotlin, AGP 8.7.3, WebView | `app-universal-release.apk` на все ABI + split-APK (arm64-v8a, armeabi-v7a, x86, x86_64), minSdk 24 | `gradle assembleRelease` (JDK 17 + Android SDK) |
+| `IOS/` | Swift / UIKit + WKWebView | один target `TARGETED_DEVICE_FAMILY = 1,2` (iPhone + iPad), iOS 15+ | Xcode 15+ на macOS → Product → Archive (.ipa) |
+
+Подробности — в `Android/README.md` и `IOS/README.md`.
+
 ## Структура проекта
 
 ```

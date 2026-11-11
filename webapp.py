@@ -21,6 +21,7 @@ from aiohttp import web
 import config
 from api import (  # единый API экосистемы: сессии, initData, /api/v1/*
     SESSION_TTL,
+    is_admin_uid,
     make_session,
     register_v1_routes,
     validate_init_data,
@@ -102,6 +103,7 @@ async def api_me(request: web.Request) -> web.Response:
         "telegram_id": uid,
         "has_subscription": bool(customer and customer.get("wdtt_password")),
         "trial_used": await has_used_trial(uid),
+        "is_admin": is_admin_uid(uid),
     }
     if customer and customer.get("wdtt_password"):
         exp = int(customer.get("expires_at") or 0)

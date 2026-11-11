@@ -225,6 +225,31 @@ async def init_db() -> None:
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_site_referrals_referrer ON site_referrals(referrer_site_user_id)"
         )
+
+        # Динамические администраторы (назначаются через админ-панель: по TG ID или ссылкой-приглашением)
+        await db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS admins (
+                telegram_id INTEGER PRIMARY KEY,
+                added_by    INTEGER,
+                source      TEXT NOT NULL DEFAULT 'manual',  -- manual | invite
+                created_at  INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS admin_invites (
+                code        TEXT PRIMARY KEY,
+                created_by  INTEGER,
+                created_at  INTEGER NOT NULL,
+                used        INTEGER NOT NULL DEFAULT 0,
+                used_by     INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS settings (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            """
+        )
+        await _refresh_admin_cache()
         
         
         # ---------- payments ----------
@@ -919,3 +944,139 @@ async def stats() -> dict:
         "paid": paid,
         "revenue": float(revenue or 0.0),
     }
+
+
+# ---------- администраторы (динамические: по TG ID или ссылкой-приглашением) ----------
+
+_ADMIN_CACHE: set[int] | None = None
+
+
+async def _refresh_admin_cache() -> None:
+    global _ADMIN_CACHE
+    async with conn() as db:
+        cur = await db.execute("SELECT telegram_id FROM admins")
+        _ADMIN_CACHE = {int(r["telegram_id"]) for r in await cur.fetchall()}
+
+
+def admin_ids_all() -> set[int]:
+    """Все ID админов: из конфига ADMIN_IDS + назначенные через панель (кеш БД)."""
+    from config import ADMIN_IDS
+    ids = set(ADMIN_IDS)
+    if _ADMIN_CACHE:
+        ids |= _ADMIN_CACHE
+    return ids
+
+
+def is_admin_cached(telegram_id: int) -> bool:
+    """Синхронная проверка: админ = в конфиге ADMIN_IDS или назначен через панель."""
+    return int(telegram_id) in admin_ids_all()
+
+
+async def list_admins() -> list[dict]:
+    async with conn() as db:
+        cur = await db.execute("SELECT * FROM admins ORDER BY created_at")
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def add_admin(telegram_id: int, added_by: int | None = None, source: str = "manual") -> bool:
+    """Назначает админа. True — добавлен, False — уже был."""
+    async with conn() as db:
+        cur = await db.execute(
+            "INSERT OR IGNORE INTO admins(telegram_id, added_by, source, created_at) VALUES (?,?,?,?)",
+            (int(telegram_id), added_by, source, int(time.time())),
+        )
+        await db.commit()
+        added = cur.rowcount > 0
+    await _refresh_admin_cache()
+    return added
+
+
+async def remove_admin(telegram_id: int) -> bool:
+    """Снимает админа, назначенного через панель. True — удалён."""
+    async with conn() as db:
+        cur = await db.execute("DELETE FROM admins WHERE telegram_id = ?", (int(telegram_id),))
+        await db.commit()
+        removed = cur.rowcount > 0
+    await _refresh_admin_cache()
+    return removed
+
+
+async def create_admin_invite(created_by: int | None = None) -> dict:
+    """Создаёт одноразовую ссылку-приглашение в админы: t.me/<bot>?start=admin_<code>."""
+    code = secrets.token_urlsafe(16)
+    async with conn() as db:
+        await db.execute(
+            "INSERT INTO admin_invites(code, created_by, created_at, used, used_by) VALUES (?,?,?,0,NULL)",
+            (code, created_by, int(time.time())),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM admin_invites WHERE code = ?", (code,))
+        row = await cur.fetchone()
+        return dict(row) if row else {}
+
+
+async def list_admin_invites() -> list[dict]:
+    async with conn() as db:
+        cur = await db.execute("SELECT * FROM admin_invites ORDER BY created_at DESC")
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def revoke_admin_invite(code: str) -> bool:
+    """Отзывает неиспользованное приглашение. True — отозвано."""
+    async with conn() as db:
+        cur = await db.execute("DELETE FROM admin_invites WHERE code = ? AND used = 0", (code,))
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def consume_admin_invite(code: str, telegram_id: int) -> str:
+    """Принимает приглашение: 'ok' — пользователь стал админом, 'used' — ссылка занята, 'not_found'."""
+    async with conn() as db:
+        cur = await db.execute("SELECT * FROM admin_invites WHERE code = ?", (code,))
+        row = await cur.fetchone()
+        if not row:
+            return "not_found"
+        if row["used"]:
+            return "used"
+        await db.execute(
+            "UPDATE admin_invites SET used = 1, used_by = ? WHERE code = ?",
+            (int(telegram_id), code),
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO admins(telegram_id, added_by, source, created_at) VALUES (?,?,?,?)",
+            (int(telegram_id), row["created_by"], "invite", int(time.time())),
+        )
+        await db.commit()
+    await _refresh_admin_cache()
+    return "ok"
+
+
+# ---------- настройки экосистемы (редактируются из админ-панели) ----------
+
+DEFAULT_APP_WINDOWS_URL = (
+    "https://github.com/ildarmaga/wdtt/releases/download/v1.5.76/pwdtt-client-windows-amd64.exe"
+)
+
+
+async def get_setting(key: str, default: str | None = None) -> str | None:
+    async with conn() as db:
+        cur = await db.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = await cur.fetchone()
+        return row["value"] if row else default
+
+
+async def set_setting(key: str, value: str) -> None:
+    async with conn() as db:
+        await db.execute(
+            "INSERT INTO settings(key, value, updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (key, value, int(time.time())),
+        )
+        await db.commit()
+
+
+async def get_app_windows_url() -> str:
+    """Эффективная ссылка на PWDTT (Windows): из админ-панели (БД) или из конфига по умолчанию."""
+    import config
+    val = (await get_setting("app_windows_url")) or ""
+    return val.strip() or config.APP_WINDOWS_URL or DEFAULT_APP_WINDOWS_URL

@@ -82,6 +82,16 @@ button { font-family: inherit; }
 }
 .card.flush { padding: 4px 16px; }
 
+/* выбор устройства в инструкции: карточка-кнопка на всю ширину */
+.dev-card {
+  display: block; width: calc(100% - 24px); text-align: left; cursor: pointer;
+  font: inherit; color: inherit; background: var(--card);
+}
+.dev-card:active { transform: scale(.99); }
+.dev-card .note { display: block; margin-top: 2px; }
+/* шаг инструкции без скриншота (напр. Windows) */
+.instr-text { margin: .5rem 0; line-height: 1.5; }
+
 /* ===== hero-карточка подписки ===== */
 .hero-card {
   background: linear-gradient(135deg, var(--btn), color-mix(in srgb, var(--btn) 40%, #000));
@@ -222,11 +232,16 @@ button { font-family: inherit; }
 .check .check-text { flex: 1; }
 .check .check-note { display: block; font-size: 12px; color: var(--hint); margin-top: 4px; }
 select {
-  width: 100%; padding: 12px; border-radius: 12px; font-size: 14px;
-  background: var(--soft); color: var(--text);
-  border: 1px solid var(--border); margin-top: 8px;
+  width: 100%; box-sizing: border-box; margin: 6px 0; padding: 11px 12px;
+  border-radius: 10px; border: 1px solid var(--border);
+  background: var(--soft); color: var(--text); font: inherit;
 }
 select:disabled { opacity: .5; }
+.inp {
+  width: 100%; box-sizing: border-box; margin: 6px 0; padding: 11px 12px;
+  border-radius: 10px; border: 1px solid var(--border);
+  background: var(--soft); color: var(--text); font: inherit;
+}
 .note { font-size: 12px; color: var(--hint); line-height: 1.5; }
 
 /* ===== тост ===== */
