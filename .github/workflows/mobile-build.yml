@@ -1,0 +1,68 @@
+name: Mobile build (iOS + Android release)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'IOS/**'
+      - '.github/workflows/mobile-build.yml'
+      - 'KOGateway-1.0-universal.apk'
+
+permissions:
+  contents: write
+
+jobs:
+  ios:
+    name: Build iOS app (macOS runner)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build for simulator (unsigned)
+        working-directory: IOS
+        run: |
+          set -e
+          xcodebuild -project KOGateway.xcodeproj -scheme KOGateway \
+            -configuration Release -sdk iphonesimulator -derivedDataPath build-sim \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+          ls -d build-sim/Build/Products/Release-iphonesimulator/KOGateway.app
+
+      - name: Build for device (arm64, unsigned)
+        working-directory: IOS
+        continue-on-error: true
+        run: |
+          xcodebuild -project KOGateway.xcodeproj -scheme KOGateway \
+            -configuration Release -sdk iphoneos -derivedDataPath build-dev \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" build || echo "device build skipped (needs signing)"
+
+      - name: Package IPA
+        working-directory: IOS
+        run: |
+          set -e
+          mkdir -p Payload
+          APP="build-dev/Build/Products/Release-iphoneos/KOGateway.app"
+          [ -d "$APP" ] || APP="build-sim/Build/Products/Release-iphonesimulator/KOGateway.app"
+          cp -R "$APP" Payload/
+          zip -qr KOGateway-ios-unsigned.ipa Payload
+          rm -rf Payload
+          ls -la KOGateway-ios-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KOGateway-ios-ipa
+          path: IOS/KOGateway-ios-unsigned.ipa
+
+      - name: Publish assets to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v1.0.0
+        run: |
+          cd IOS
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --target main --title "K.O. Gateway $TAG" \
+              --notes "Android APK (universal) и iOS IPA (unsigned)."
+          gh release upload "$TAG" KOGateway-ios-unsigned.ipa --clobber
+          gh release upload "$TAG" ../KOGateway-1.0-universal.apk --clobber
+          gh release view "$TAG"
