@@ -189,6 +189,13 @@ API для фронтенда: `POST /api/auth`, `GET /api/me`, `GET /api/plans`
 
 Подробности — в `Android/README.md` и `IOS/README.md`.
 
+### Скачать приложение
+
+- Android APK (универсальный): https://github.com/DanEvil/WDTT-Telegram-bot/releases/tag/v1.0.0
+  (`KOGateway-1.0-universal.apk`)
+- iOS IPA собирается автоматически в GitHub Actions на macOS-раннере
+  (`.github/workflows/mobile-build.yml`) и тоже попадает в тот же релиз.
+
 ## Структура проекта
 
 ```
