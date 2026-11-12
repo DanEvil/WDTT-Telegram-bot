@@ -2421,15 +2421,6 @@ class DirectRoutesWindow:
 
         nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
-    def _on_tab_changed(self, _event):
-        """Пересканировать приложения при открытии вкладки Приложения."""
-        try:
-            selected = self.nb.index(self.nb.select())
-            if selected == 2:  # вкладка "Приложения" — третья
-                self._refresh_installed_apps()
-        except Exception:
-            pass
-
         up_frame = tk.Frame(self.win)
         up_frame.pack(fill="x", **pad)
         if mode == "direct":
@@ -2452,6 +2443,15 @@ class DirectRoutesWindow:
 
         self._refresh_lists()
         self._update_info()
+
+    def _on_tab_changed(self, _event):
+        """Пересканировать приложения при открытии вкладки Приложения."""
+        try:
+            selected = self.nb.index(self.nb.select())
+            if selected == 2:  # вкладка "Приложения" — третья
+                self._refresh_installed_apps()
+        except Exception:
+            pass
 
     def _build_list_tab(self, frame, kind: str, placeholder: str, hint: str):
         top = tk.Frame(frame)

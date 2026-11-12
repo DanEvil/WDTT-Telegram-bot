@@ -229,8 +229,34 @@ _FAVICON = (
     "%3C/svg%3E"
 )
 
+def _site_nav_html(active: str, session: dict | None) -> str:
+    """Вкладки сайта — по аналогии с навигацией Telegram Mini App.
+
+    В Mini App экраны переключаются нижней панелью; на сайте те же разделы
+    живут в шапке: Главная, Тарифы, Инструкция, Профиль (и Админ для админов).
+    """
+    items = [
+        ("/", "🏠", "Главная"),
+        ("/#plans", "🛒", "Тарифы"),
+        ("/instruction", "📖", "Инструкция"),
+    ]
+    if session:
+        items.append(("/profile", "👤", "Профиль"))
+    else:
+        items.append(("/login", "🔐", "Вход"))
+    tg_id = (session or {}).get("telegram_id")
+    if tg_id and _is_admin(int(tg_id)):
+        items.append(("/admin", "🛠", "Админ"))
+    links = "".join(
+        f'<a href="{href}" class="{"active" if label == active else ""}">'
+        f'<span class="ico" aria-hidden="true">{ico}</span>{label}</a>'
+        for href, ico, label in items
+    )
+    return f'<nav class="nav" aria-label="Разделы сайта">{links}</nav>'
+
+
 def _page(title: str, body: str, session: dict | None = None, active: str = "") -> str:
-    # Шапка сайта минимальна: только бренд K.O. Gateway и кнопка «Бот в Telegram».
+    # Шапка сайта: бренд, вкладки-разделы и кнопка «Бот в Telegram».
     tg_btn = (
         f"<a class='tg-btn' href='{_bot_link()}' target='_blank' rel='noopener'>"
         f"<svg class='tg-ico' viewBox='0 0 24 24' aria-hidden='true'><path fill='currentColor' d="
@@ -257,6 +283,7 @@ def _page(title: str, body: str, session: dict | None = None, active: str = "") 
   <div class="brand">{_brand_html()}</div>
   <div class="topbar-right">{tg_btn}</div>
 </header>
+{_site_nav_html(active, session)}
 <main id="main">
 <h1 class="page-title">{html.escape(title)}</h1>
 {body}
@@ -1016,58 +1043,89 @@ async def handle_yookassa_webhook(request: web.Request) -> web.Response:
         log.exception("webhook: не удалось запустить fulfilment: %s", e)
     return web.Response(text="ok")
 
-async def handle_instruction(request: web.Request) -> web.Response:
+def _instruction_platforms(win_url: str) -> dict:
+    """Платформы из единого источника instructions.py (с актуальной ссылкой на Windows)."""
     import instructions as instr
+    return instr.platforms_with_windows_app(win_url)
 
-    win_url = await get_app_windows_url()
-    plats = instr.platforms_with_windows_app(win_url)
 
-    def platform_html(key: str) -> str:
-        p = plats[key]
-        links = ""
-        if p.get("app_url"):
-            links += (f"<p><a class='btn' href='{p['app_url']}' target='_blank' rel='noopener'>"
-                      f"{html.escape(p['app_label'])}</a></p>")
-        for url, label in p.get("links", []):
-            links += f"<p><a href='{url}' target='_blank' rel='noopener'>{html.escape(label)}</a></p>"
-        steps = "".join(
-            (f"<figure class='instr-step'><img src='{instr.step_img(img)}' alt='{html.escape(cap)}' loading='lazy'>"
-             f"<figcaption>{html.escape(cap)}</figcaption></figure>" if img
-             else f"<p class='instr-text'><b>{i}.</b> {html.escape(cap)}</p>")
-            for i, (img, cap) in enumerate(p["steps"], 1)
+def _platform_cards_html(plats: dict) -> str:
+    """Карточки выбора устройства — как на экране «Инструкция» в Mini App."""
+    cards = []
+    for key in ("android", "ios", "windows"):
+        p = plats.get(key)
+        if not p:
+            continue
+        ico = {"android": "🤖", "ios": "🍎", "windows": "🪟"}.get(key, "📱")
+        sub = p.get("app_label") or "Пошаговая инструкция"
+        cards.append(
+            f"<a class='card dev-card' href='/instruction/{key}'>"
+            f"<h3>{ico} {html.escape(p['title'].split(' ', 1)[-1])}</h3>"
+            f"<p class='note'>{html.escape(sub)}</p>"
+            f"<span class='btn secondary small'>Открыть инструкцию →</span>"
+            f"</a>"
         )
-        return f"<div class='card'><h3>{p['title']}</h3><p>{p['intro']}</p>{links}{steps}</div>"
+    return "".join(cards)
+
+
+async def handle_instruction(request: web.Request) -> web.Response:
+    """Экран «Инструкция»: выбор устройства (как в Mini App), ниже — общий порядок шагов."""
+    win_url = await get_app_windows_url()
+    plats = _instruction_platforms(win_url)
 
     body = f"""
-    <h2>📖 Инструкция подключения</h2>
     <div class="card">
-      <h3>1. Скачайте приложение</h3>
-      <div class="apps">
-        <a class="app-link" href="{APP_ANDROID_URL}" target="_blank" rel="noopener">
-          <span class="app-ico">🤖</span><span>Android<br><small>APK</small></span>
-        </a>
-        <a class="app-link" href="{APP_IOS_TESTFLIGHT_URL}" target="_blank" rel="noopener">
-          <span class="app-ico">🍎</span><span>iOS<br><small>TestFlight → <a href="{APP_IOS_JOIN_URL}" target="_blank" rel="noopener">приглашение</a></small></span>
-        </a>
-        <a class="app-link" href="{win_url}" target="_blank" rel="noopener">
-          <span class="app-ico">🪟</span><span>Windows<br><small>PWDTT</small></span>
-        </a>
-      </div>
+      <p class="note" style="margin:0">Выберите устройство — откроется отдельная страница с пошаговой
+        инструкцией для него. Если выбрали не то устройство — вернитесь и выберите другое.</p>
     </div>
+    <div class="dev-grid">{_platform_cards_html(plats)}</div>
     <div class="card">
-      <h3>2. Добавьте конфигурацию</h3>
-      <p>Скопируйте вашу ссылку <code>wdtt://...</code> из профиля (в приложении или в боте Telegram),
-        и следуйте пошаговой инструкции для вашей платформы ниже.</p>
-    </div>
-    {platform_html("android")}
-    {platform_html("ios")}
-    {platform_html("windows")}
-    <div class="card">
-      <h3>3. Подключитесь</h3>
-      <p>Нажмите «Подключить». Готово — весь трафик идёт через защищённый туннель.</p>
+      <h3>Общий порядок подключения</h3>
+      <p><b>1.</b> Скачайте приложение для вашего устройства (ссылки — в инструкции к платформе).</p>
+      <p><b>2.</b> Скопируйте вашу ссылку <code>wdtt://...</code> из профиля
+         (в приложении, на сайте или в боте Telegram).</p>
+      <p><b>3.</b> Вставьте ссылку в приложение и нажмите «Подключить».
+         Готово — весь трафик идёт через защищённый туннель.</p>
     </div>
     """
     return web.Response(text=_page("Инструкция", body, _get_session(request), active="Инструкция"), content_type="text/html")
+
+
+async def handle_instruction_device(request: web.Request) -> web.Response:
+    """Страница инструкции для конкретного устройства (Android / iOS / Windows)."""
+    import instructions as instr
+
+    key = (request.match_info.get("device") or "").strip().lower()
+    win_url = await get_app_windows_url()
+    plats = _instruction_platforms(win_url)
+    p = plats.get(key)
+    if not p:
+        raise web.HTTPFound("/instruction")
+
+    links = ""
+    if p.get("app_url"):
+        links += (f"<p><a class='btn' href='{html.escape(p['app_url'], quote=True)}' target='_blank' rel='noopener'>"
+                  f"{html.escape(p['app_label'])}</a></p>")
+    for url, label in p.get("links", []):
+        links += (f"<p><a href='{html.escape(url, quote=True)}' target='_blank' rel='noopener'>"
+                  f"{html.escape(label)}</a></p>")
+    steps = "".join(
+        (f"<figure class='instr-step'><img src='{instr.step_img(img)}' alt='{html.escape(cap)}' loading='lazy'>"
+         f"<figcaption><b>{i}.</b> {html.escape(cap)}</figcaption></figure>" if img
+         else f"<p class='instr-text'><b>{i}.</b> {html.escape(cap)}</p>")
+        for i, (img, cap) in enumerate(p["steps"], 1)
+    )
+    body = f"""
+    <p><a class='btn secondary' href='/instruction'>← Назад к выбору устройства</a></p>
+    <div class="card">
+      <h3>{html.escape(p['title'])}</h3>
+      <p>{p['intro']}</p>
+      {links}
+      {steps}
+    </div>
+    """
+    title = f"Инструкция — {p['title'].split(' ', 1)[-1]}"
+    return web.Response(text=_page(title, body, _get_session(request), active="Инструкция"), content_type="text/html")
 
 # ---------- админ ----------
 
@@ -1574,6 +1632,7 @@ def make_app() -> web.Application:
     app.router.add_get("/pay/cancel", handle_pay_cancel)
     app.router.add_post("/yookassa-webhook", handle_yookassa_webhook)
     app.router.add_get("/instruction", handle_instruction)
+    app.router.add_get("/instruction/{device}", handle_instruction_device)
     app.router.add_get("/admin", handle_admin)
     app.router.add_post("/admin/server/install", handle_admin_install_server)
     app.router.add_post("/admin/admins/add", handle_admin_add_admin)

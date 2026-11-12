@@ -65,6 +65,24 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .nav a { color: var(--muted); font-size: .95rem; padding: .3rem .6rem; border-radius: .4rem; }
 .nav a:hover { background: var(--card); text-decoration: none; color: var(--accent); }
 .nav a.active { color: var(--accent); font-weight: 600; }
+/* вкладки-разделы сайта (как нижняя навигация в Mini App) */
+.nav a { display: inline-flex; align-items: center; gap: .4rem; white-space: nowrap; }
+.nav a .ico { font-size: 1.05rem; line-height: 1; }
+.nav a.active { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
+/* карточки выбора устройства (инструкция) */
+.dev-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem; margin: 1rem 0;
+}
+.dev-card {
+  display: block; color: var(--text) !important; text-decoration: none !important;
+  transition: transform .18s ease, border-color .18s ease;
+}
+.dev-card:hover { transform: translateY(-3px); border-color: var(--accent); text-decoration: none; }
+.dev-card h3 { display: flex; align-items: center; gap: .45rem; margin: 0 0 .35rem; }
+.dev-card .note { color: var(--muted); font-size: .85rem; margin: 0 0 .8rem; }
+.dev-card .btn { display: inline-block; }
 
 /* ===== карточки и формы ===== */
 .card {

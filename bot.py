@@ -1164,12 +1164,30 @@ async def nav_ref(message: Message) -> None:
 
 @router.message(F.text == "📖 Инструкция", StateFilter(None))
 async def nav_instruction(message: Message) -> None:
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+    kb_rows = [
         [InlineKeyboardButton(text="🤖 Android", callback_data="instr:android:0"),
          InlineKeyboardButton(text="🍎 iOS", callback_data="instr:ios:0")],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="instr:main")],
-    ])
+        [InlineKeyboardButton(text="🪟 Windows", callback_data="instr:windows:0")],
+    ]
+    site_instr = ""
+    if config.SITE_URL:
+        site_instr = config.SITE_URL.rstrip("/") + "/instruction"
+    if site_instr:
+        kb_rows.append([InlineKeyboardButton(text="🌐 Инструкция на сайте", url=site_instr)])
+    kb_rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="instr:main")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     await message.answer(INSTRUCTION_INTRO, reply_markup=kb)
+
+
+async def _instruction_platforms() -> dict:
+    """Платформы из единого источника instructions.py (ссылка на Windows — из админ-панели)."""
+    import instructions as instr
+    from db import get_app_windows_url
+    try:
+        win_url = await get_app_windows_url()
+    except Exception:
+        win_url = ""
+    return instr.platforms_with_windows_app(win_url or config.APP_WINDOWS_URL)
 
 
 @router.callback_query(F.data.startswith("instr:"))
@@ -1184,15 +1202,19 @@ async def instr_callback(cb: CallbackQuery) -> None:
         await cb.answer()
         return
 
-    platform = parts[1]  # android / ios
+    platform = parts[1]  # android / ios / windows
     step = int(parts[2])
 
     if platform == "android":
         photos = ANDROID_PHOTOS
         intro = INSTRUCTION_ANDROID
-    else:
+    elif platform == "ios":
         photos = INSTRUCTION_PHOTOS
         intro = INSTRUCTION_IOS
+    else:
+        # Windows: шаги текстовые (скриншотов нет) + ссылка на приложение
+        await _instr_windows(cb, step)
+        return
 
     if step == 0:
         # первый экран — текст + кнопка «Начать»
@@ -1221,6 +1243,55 @@ async def instr_callback(cb: CallbackQuery) -> None:
     kb = InlineKeyboardMarkup(inline_keyboard=[buttons])
     await cb.message.delete()
     await cb.message.answer_photo(FSInputFile(path), caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await cb.answer()
+
+
+async def _instr_windows(cb: CallbackQuery, step: int) -> None:
+    """Инструкция для Windows: текстовые шаги + ссылка на приложение PWDTT."""
+    if not cb.message:
+        await cb.answer()
+        return
+    plats = await _instruction_platforms()
+    p = plats.get("windows") or {}
+    steps = p.get("steps") or []
+    app_url = p.get("app_url") or ""
+    app_label = p.get("app_label") or "Скачать PWDTT для Windows"
+
+    if step == 0:
+        lines = [p.get("intro") or "🪟 <b>Windows</b> — установите PWDTT и подключитесь."]
+        buttons = []
+        if app_url:
+            buttons.append(InlineKeyboardButton(text=f"⬇️ {app_label}", url=app_url))
+        buttons.append(InlineKeyboardButton(text="Начать ▶", callback_data="instr:windows:1"))
+        site_instr = ""
+        if config.SITE_URL:
+            site_instr = config.SITE_URL.rstrip("/") + "/instruction/windows"
+        if site_instr:
+            buttons.append(InlineKeyboardButton(text="🌐 Инструкция на сайте", url=site_instr))
+        buttons.append(InlineKeyboardButton(text="🏠 Главное меню", callback_data="instr:main"))
+        await cb.message.edit_text(
+            "\n\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]),
+            parse_mode=ParseMode.HTML,
+        )
+        await cb.answer()
+        return
+
+    if step > len(steps):
+        await cb.answer()
+        return
+
+    _img, caption = steps[step - 1]
+    text = f"🪟 <b>Шаг {step} из {len(steps)}</b>\n\n{caption}"
+    buttons = []
+    if step > 1:
+        buttons.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"instr:windows:{step - 1}"))
+    if step < len(steps):
+        buttons.append(InlineKeyboardButton(text="Далее ▶", callback_data=f"instr:windows:{step + 1}"))
+    else:
+        buttons.append(InlineKeyboardButton(text="🏠 Главное меню", callback_data="instr:main"))
+    kb = InlineKeyboardMarkup(inline_keyboard=[buttons])
+    await cb.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
     await cb.answer()
 
 

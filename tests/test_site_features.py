@@ -174,11 +174,56 @@ async def test_profile_has_no_payment_history(monkeypatch):
 
 # ---------- страница инструкции на сайте ----------
 
-async def test_site_instruction_has_screenshots():
-    """На странице инструкции сайта есть скриншоты, блок Windows (PWDTT), нет ссылки «Открыть бота»."""
+async def test_site_instruction_lists_devices():
+    """«Инструкция» на сайте — выбор устройства (как в Mini App) + кнопки всех платформ."""
     resp = await web_app.handle_instruction(_Req())
     assert resp.status == 200
-    assert "/static/instr/" in resp.text
-    assert "Открыть бота" not in resp.text
+    for device in ("android", "ios", "windows"):
+        assert f"/instruction/{device}" in resp.text
     assert "PWDTT" in resp.text
-    assert "🪟 Windows" in resp.text
+    assert "🪟" in resp.text
+    assert "Открыть бота" not in resp.text
+
+
+async def test_site_instruction_device_has_screenshots():
+    """Страница устройства: скриншоты, ссылка на приложение и кнопка «Назад»."""
+    class _ReqDevice(_Req):
+        def __init__(self, device: str):
+            super().__init__()
+            self.match_info = {"device": device}
+
+    resp = await web_app.handle_instruction_device(_ReqDevice("android"))
+    assert resp.status == 200
+    assert "/static/instr/" in resp.text
+    assert "/instruction" in resp.text  # кнопка «Назад к выбору устройства»
+    assert "Открыть бота" not in resp.text
+
+    resp_win = await web_app.handle_instruction_device(_ReqDevice("windows"))
+    assert resp_win.status == 200
+    assert "PWDTT" in resp_win.text
+    assert "windows" in resp_win.text.lower()
+
+
+async def test_site_instruction_unknown_device_redirects():
+    """Неизвестное устройство → редирект на общий экран выбора."""
+    class _ReqDevice(_Req):
+        def __init__(self, device: str):
+            super().__init__()
+            self.match_info = {"device": device}
+
+    try:
+        await web_app.handle_instruction_device(_ReqDevice("tv"))
+    except web.HTTPFound as e:
+        assert e.location == "/instruction"
+    else:
+        raise AssertionError("ожидался редирект на /instruction")
+
+
+async def test_site_nav_has_instruction_tab():
+    """В шапке сайта есть вкладки-разделы, включая «Инструкция» (как в Mini App)."""
+    resp = await web_app.handle_index(_Req())
+    assert resp.status == 200
+    assert 'class="nav"' in resp.text
+    assert "Инструкция" in resp.text
+    assert 'href="/instruction"' in resp.text
+
