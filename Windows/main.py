@@ -20,6 +20,24 @@ except ImportError:  # запуск из другой директории
     _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import theme as T
 
+# Репозиторий запрета: каталог техник блокировки и способы их обхода
+try:
+    import block_methods as BM
+except ImportError:
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    try:
+        import block_methods as BM
+    except ImportError:
+        BM = None
+
+try:
+    import bypass as BP
+except ImportError:  # запуск из другой директории
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import bypass as BP
+
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 SUB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subscription.json")
 SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session.json")
@@ -1660,6 +1678,55 @@ class GatewayApp:
         T.ghost_button(speed_row2, text="Перенести в прямое подключение",
                        command=self.promote_selected_slow, font=(T.FONT, 9)).pack(side="left", padx=(0, 6))
 
+        # --- Обход блокировок и замедлений ---
+        blk_card = T.card(self.body)
+        blk_card.pack(fill="x", pady=(0, 12))
+        tk.Label(blk_card, text="🛡 ОБХОД БЛОКИРОВОК И ЗАМЕДЛЕНИЙ", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9, "bold")).pack(anchor="w", padx=16, pady=(12, 6))
+
+        blk_row0 = tk.Frame(blk_card, bg=T.CARD)
+        blk_row0.pack(fill="x", padx=16, pady=(0, 8))
+        tk.Label(blk_row0, text="Сайт для проверки:", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(side="left")
+        self.blk_url_var = tk.StringVar(value="https://www.google.com")
+        T.dark_entry(blk_row0, textvariable=self.blk_url_var, width=34,
+                     font=(T.FONT, 9)).pack(side="left", padx=(8, 8))
+        T.accent_button(blk_row0, text="Диагностировать", command=self._run_block_diagnostics,
+                        font=(T.FONT, 9, "bold"), width=16, height=1).pack(side="left")
+        T.ghost_button(blk_row0, text="Применить обход", command=self._apply_block_bypass,
+                       font=(T.FONT, 9), width=15, height=1).pack(side="left", padx=(8, 0))
+        T.ghost_button(blk_row0, text="Каталог техник", command=self._open_block_catalog,
+                       font=(T.FONT, 9), width=14, height=1).pack(side="left", padx=(8, 0))
+
+        blk_row1 = tk.Frame(blk_card, bg=T.CARD)
+        blk_row1.pack(fill="x", padx=16, pady=(0, 8))
+        self.blk_status_var = tk.StringVar(value="Проверьте сайт — приложение определит, что мешает доступу")
+        tk.Label(blk_row1, textvariable=self.blk_status_var, bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9), wraplength=620, justify="left",
+                 anchor="w").pack(fill="x")
+
+        blk_row2 = tk.Frame(blk_card, bg=T.CARD)
+        blk_row2.pack(fill="x", padx=16, pady=(0, 8))
+        tk.Label(blk_row2, text="Найденная техника блокировки:", bg=T.CARD, fg=T.TEXT,
+                 font=(T.FONT, 9, "bold")).pack(side="left", anchor="w")
+        self.blk_method_var = tk.StringVar(value="—")
+        tk.Label(blk_row2, textvariable=self.blk_method_var, bg=T.CARD, fg=T.ACCENT,
+                 font=(T.FONT, 9, "bold"), wraplength=430, justify="left",
+                 anchor="w").pack(side="left", padx=(8, 0), fill="x", expand=True)
+
+        blk_row3 = tk.Frame(blk_card, bg=T.CARD)
+        blk_row3.pack(fill="x", padx=16, pady=(0, 12))
+        tk.Label(blk_row3, text="Рекомендуемые способы обхода:", bg=T.CARD, fg=T.TEXT,
+                 font=(T.FONT, 9, "bold")).pack(anchor="w")
+        self.blk_remedies = tk.Listbox(blk_row3, font=("Segoe UI", 9), height=3,
+                                       bg=T.INPUT_BG, fg=T.TEXT,
+                                       selectbackground=T.ACCENT,
+                                       selectforeground="#ffffff", relief="flat", bd=0,
+                                       highlightthickness=1, highlightbackground=T.BORDER,
+                                       highlightcolor=T.ACCENT)
+        self.blk_remedies.pack(fill="x", pady=(4, 0))
+        self.blk_diagnosis = None
+
         # --- Авто-переключение протоколов ---
         ff_card = T.card(self.body)
         ff_card.pack(fill="x", pady=(0, 12))
@@ -1742,6 +1809,154 @@ class GatewayApp:
         self._save_config()
         self._refresh_exc_info()
 
+    def _open_block_catalog(self):
+        """Показывает репозиторий запрета: каталог техник блокировки."""
+        if BM is None:
+            messagebox.showwarning("Репозиторий запрета",
+                                    "Модуль block_methods не найден")
+            return
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Репозиторий запрета — K.O. Gateway")
+        dlg.geometry("760x560")
+        dlg.configure(bg=T.BG)
+        dlg.transient(self.root)
+        T.set_dark_titlebar(dlg)
+
+        head = tk.Frame(dlg, bg=T.BG)
+        head.pack(fill="x", padx=18, pady=(16, 8))
+        tk.Label(head, text="Каталог техник блокировки и обхода", bg=T.BG, fg=T.TEXT,
+                 font=(T.FONT, 15, "bold")).pack(side="left")
+        tk.Label(head, text=f"{len(BM.get_catalog())} техник", bg=T.BG, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(side="right")
+
+        body = tk.Frame(dlg, bg=T.BG, padx=18, pady=6)
+        body.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(body, bg=T.BG, highlightthickness=0, bd=0)
+        scroll = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg=T.BG)
+        inner.bind("<Configure>",
+                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scroll.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        for method in BM.get_catalog():
+            card = T.card(inner)
+            card.pack(fill="x", pady=(0, 8))
+            top = tk.Frame(card, bg=T.CARD)
+            top.pack(fill="x", padx=14, pady=(10, 2))
+            tk.Label(top, text=method["title"], bg=T.CARD, fg=T.TEXT,
+                     font=(T.FONT, 10, "bold")).pack(side="left")
+            tk.Label(top, text=method.get("kind", ""), bg=T.CARD, fg=T.MUTED,
+                     font=(T.FONT, 8)).pack(side="right")
+            tk.Label(card, text=method.get("description", ""), bg=T.CARD, fg=T.MUTED,
+                     font=(T.FONT, 9), wraplength=660, justify="left",
+                     anchor="w").pack(fill="x", padx=14, pady=(0, 4))
+            rem = tk.Label(card, text="", bg=T.CARD, fg=T.ACCENT,
+                           font=(T.FONT, 9), wraplength=660, justify="left",
+                           anchor="w")
+            rem.pack(fill="x", padx=14, pady=(0, 8))
+            titles = " · ".join(r["title"] for r in method.get("remedies", []))
+            rem.config(text="Обход: " + titles)
+
+    def _run_block_diagnostics(self):
+        """Диагностирует сайт: определяет технику блокировки и способы обхода."""
+        if BM is None:
+            self.blk_status_var.set("Модуль block_methods не найден")
+            return
+        url = self.blk_url_var.get().strip()
+        if not url:
+            self.blk_status_var.set("Укажите сайт для проверки")
+            return
+        if "://" not in url:
+            url = "https://" + url
+        self.blk_status_var.set("Идёт диагностика…")
+        self.blk_method_var.set("…")
+        self.blk_remedies.delete(0, "end")
+
+        def worker():
+            try:
+                threshold = int(self.config.get("speed_test", {}).get("threshold_ms", 3000))
+                diag = BM.diagnose(url, slow_threshold_ms=threshold, timeout=8.0)
+            except Exception as e:
+                self.root.after(0, lambda: self.blk_status_var.set(f"Ошибка диагностики: {e}"))
+                return
+            self.root.after(0, lambda: self._show_block_diagnosis(diag))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_block_diagnosis(self, diag: dict):
+        """Показывает результат диагностики и список обходов."""
+        self.blk_diagnosis = diag
+        verdict = diag.get("verdict", {})
+        probe = diag.get("probe", {})
+        method = diag.get("method")
+        severity = verdict.get("severity")
+
+        parts = []
+        parts.append(f"DNS {probe.get('dns_ms', '—')} мс · TCP {probe.get('tcp_ms', '—')} мс · "
+                     f"TLS {probe.get('tls_ms', '—')} мс · HTTP {probe.get('http_ms', '—')} мс")
+        self.blk_status_var.set(" · ".join(parts))
+
+        if method:
+            self.blk_method_var.set(f"{method['title']} — {verdict.get('reason', '')}")
+        elif severity == "ok":
+            self.blk_method_var.set("Блокировка не обнаружена")
+        else:
+            self.blk_method_var.set(verdict.get("reason", "—"))
+
+        self.blk_remedies.delete(0, "end")
+        for remedy in diag.get("remedies", []) or []:
+            self.blk_remedies.insert("end", f"{remedy['title']} — {remedy.get('detail', '')}")
+
+        if method and not diag.get("remedies"):
+            self.blk_status_var.set("Подходящие способы обхода не найдены в каталоге")
+
+    def _apply_block_bypass(self):
+        """Применяет выбранный способ обхода (или все, если ничего не выбрано)."""
+        if not self.blk_diagnosis:
+            self.blk_status_var.set("Сначала выполните диагностику")
+            return
+        if BP is None:
+            self.blk_status_var.set("Модуль bypass не найден")
+            return
+        diag = self.blk_diagnosis
+        sel = self.blk_remedies.curselection()
+        remedies = diag.get("remedies", []) or []
+        if not remedies:
+            self.blk_status_var.set("Для этого сайта нет способов обхода в каталоге")
+            return
+
+        if sel:
+            idx = sel[0]
+            chosen = [remedies[idx]] if idx < len(remedies) else []
+        else:
+            chosen = remedies[:2]
+
+        def worker():
+            results = []
+            for remedy in chosen:
+                ok, msg = BP.apply_remedy(remedy, diag.get("host", ""), drm=self.drm)
+                results.append((ok, msg))
+                if ok:
+                    break  # одного рабочего обхода достаточно
+            self.root.after(0, lambda: self._show_bypass_results(results))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_bypass_results(self, results):
+        if not results:
+            self.blk_status_var.set("Нет результатов")
+            return
+        ok = any(r[0] for r in results)
+        text = " · ".join(msg for _, msg in results)
+        self.blk_status_var.set(text)
+        self._log(f"Обход: {text}")
+        if ok:
+            self.blk_method_var.set("Обход применён — проверьте сайт ещё раз")
+
     def _toggle_ff_enabled(self):
         """Включает/выключает авто-переключение протоколов."""
         ff = self.config.setdefault("connection_failover", {})
@@ -1759,10 +1974,49 @@ class GatewayApp:
             if slow:
                 self.root.after(0, lambda: self._log(
                     f"Проверка завершена: {len(slow)} медленных/недоступных сайтов."))
+                # Медленные сайты — кандидаты на блокировку: определяем
+                # технику и сразу добавляем домен в zapret, если он установлен.
+                self._auto_bypass_slow_sites(slow)
             else:
                 self.root.after(0, lambda: self._log("Проверка завершена: все сайты отвечают быстро."))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _auto_bypass_slow_sites(self, slow: list):
+        """Определяет технику блокировки для медленных сайтов и готовит обход.
+
+        zapret2 (если установлен) получает домен в свой список автоматически —
+        изменения применяются после перезапуска zapret.
+        """
+        if BM is None or BP is None:
+            return
+        if not BP.zapret_installed():
+            return
+        threshold = int(self.speed.cfg.get("threshold_ms", 3000))
+        added = []
+        for item in slow:
+            url = item.get("url", "")
+            if not url:
+                continue
+            try:
+                diag = BM.diagnose(url, slow_threshold_ms=threshold, timeout=6.0)
+            except Exception:
+                continue
+            verdict = diag.get("verdict", {})
+            if verdict.get("severity") == "ok":
+                continue
+            host = diag.get("host", "")
+            if not host or BP.zapret_is_excluded(host):
+                continue
+            ok, msg = BP.zapret_add_host(host)
+            if ok:
+                added.append(f"{host} ({verdict.get('method_id')})")
+        if added:
+            self.root.after(0, lambda: self._log(
+                "zapret: добавлены в список обхода — " + ", ".join(added) +
+                ". Перезапустите zapret2 для применения."))
+            self.root.after(0, lambda: self.blk_status_var.set(
+                "zapret: " + ", ".join(added) + " — перезапустите zapret2"))
 
 class DirectRoutesWindow:
     def __init__(self, parent: tk.Tk, drm: DirectRoutesManager, config: dict,

@@ -13,6 +13,7 @@
 Auth: сессионный токен (HMAC bot_token), живёт 7 дней. Для нативных
 приложений — тот же механизм, что и у мини-аппа: initData от Telegram.
 """
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -522,6 +523,42 @@ async def h_connections_save(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "connections": saved})
 
 
+async def h_block_methods(request: web.Request) -> web.Response:
+    """GET /api/v1/block-methods — репозиторий запрета: каталог техник блокировки."""
+    try:
+        import block_methods as bm
+    except ImportError:
+        return web.json_response({"error": "catalog unavailable"}, status=503)
+    return web.json_response({
+        "brand": config.BRAND_NAME,
+        "methods": bm.get_catalog(),
+    })
+
+
+async def h_block_diagnose(request: web.Request) -> web.Response:
+    """POST /api/v1/block-diagnose — определить технику блокировки для сайта."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+    url = str(body.get("url") or "").strip()
+    if not url:
+        return web.json_response({"error": "missing url"}, status=400)
+    if "://" not in url:
+        url = "https://" + url
+    try:
+        import block_methods as bm
+    except ImportError:
+        return web.json_response({"error": "catalog unavailable"}, status=503)
+    threshold = int(body.get("threshold_ms") or 3000)
+    try:
+        diag = await asyncio.to_thread(bm.diagnose, url, threshold, 8.0)
+    except Exception as e:
+        log.exception("block-diagnose")
+        return web.json_response({"error": str(e)}, status=500)
+    return web.json_response(diag)
+
+
 async def h_ecosystem(request: web.Request) -> web.Response:
     return web.json_response(ecosystem_payload(await app_windows_url_effective()))
 
@@ -924,6 +961,8 @@ def register_v1_routes(app: web.Application, prefix: str = "/api/v1") -> None:
     app.router.add_post(f"{prefix}/auth/email/verify", h_email_verify)
     app.router.add_post(f"{prefix}/claim-trial", h_claim_trial)
     app.router.add_get(f"{prefix}/connections", h_connections)
+    app.router.add_get(f"{prefix}/block-methods", h_block_methods)
+    app.router.add_post(f"{prefix}/block-diagnose", h_block_diagnose)
     app.router.add_post(f"{prefix}/connections/save", h_connections_save)
     app.router.add_get(f"{prefix}/ecosystem", h_ecosystem)
     app.router.add_get(f"{prefix}/plans", h_plans)
