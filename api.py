@@ -491,11 +491,13 @@ async def h_connections(request: web.Request) -> web.Response:
     aivpn_server = (prefs.get("aivpn_server") or "").strip()
     out["aivpn"] = f"aivpn://{aivpn_server}" if aivpn_server else ""
 
-    # OpenFlux: параметры транспорта из настроек пользователя
+    # OpenFlux: параметры транспорта из настроек пользователя,
+    # а если не заданы — глобальные дефолты из админ-панели/конфига
+    from db import get_openflux_url, get_openflux_secret
     out["openflux"] = {
         "transport": prefs.get("of_transport") or "yandex",
-        "url": prefs.get("of_url") or "",
-        "secret": prefs.get("of_secret") or "",
+        "url": prefs.get("of_url") or await get_openflux_url(),
+        "secret": prefs.get("of_secret") or await get_openflux_secret(),
         "inbound": prefs.get("of_inbound") or "socks5",
         "codec": prefs.get("of_codec") or "batched",
     }
@@ -920,10 +922,14 @@ async def h_admin_settings_get(request: web.Request) -> web.Response:
     deny = _admin_only(uid)
     if deny:
         return deny
-    from db import get_setting
+    from db import get_setting, get_openflux_url, get_openflux_secret
     return web.json_response({
         "app_windows_url": await app_windows_url_effective(),
         "app_windows_url_custom": (await get_setting("app_windows_url")) or "",
+        "openflux_url": await get_openflux_url(),
+        "openflux_url_custom": (await get_setting("openflux_url")) or "",
+        "openflux_secret": await get_openflux_secret(),
+        "openflux_secret_custom": (await get_setting("openflux_secret")) or "",
     })
 
 
@@ -938,6 +944,31 @@ async def h_admin_settings_post(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "bad json"}, status=400)
     url = str(body.get("app_windows_url") or "").strip()
+    of_url = str(body.get("openflux_url") or "").strip()
+    of_secret = str(body.get("openflux_secret") or "").strip()
+    from db import conn, set_setting
+    if "openflux_url" in body or "openflux_secret" in body:
+        if of_url and not _valid_http_url(of_url):
+            return web.json_response({"error": "OpenFlux URL должен начинаться с https:// или http:// (без пробелов)."}, status=400)
+        if of_url:
+            await set_setting("openflux_url", of_url)
+        else:
+            async with conn() as db:
+                await db.execute("DELETE FROM settings WHERE key = 'openflux_url'")
+                await db.commit()
+        if of_secret:
+            await set_setting("openflux_secret", of_secret)
+        else:
+            async with conn() as db:
+                await db.execute("DELETE FROM settings WHERE key = 'openflux_secret'")
+                await db.commit()
+        log.info("api-admin tg=%s задал OpenFlux url=%s", uid, of_url)
+        from db import get_openflux_url, get_openflux_secret
+        return web.json_response({
+            "ok": True,
+            "openflux_url": await get_openflux_url(),
+            "openflux_secret": await get_openflux_secret(),
+        })
     if not url:
         # пустое значение — сброс на дефолт из конфига
         from db import conn

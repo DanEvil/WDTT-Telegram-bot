@@ -1145,3 +1145,17 @@ async def get_app_windows_url() -> str:
     import config
     val = (await get_setting("app_windows_url")) or ""
     return val.strip() or config.APP_WINDOWS_URL or DEFAULT_APP_WINDOWS_URL
+
+
+async def get_openflux_url() -> str:
+    """Эффективный URL документа OpenFlux: из админ-панели (БД) или из конфига по умолчанию."""
+    import config
+    val = (await get_setting("openflux_url")) or ""
+    return val.strip() or config.OPENFLUX_URL or ""
+
+
+async def get_openflux_secret() -> str:
+    """Эффективный секрет шифрования OpenFlux: из админ-панели (БД) или из конфига."""
+    import config
+    val = (await get_setting("openflux_secret")) or ""
+    return val.strip() or config.OPENFLUX_SECRET or ""

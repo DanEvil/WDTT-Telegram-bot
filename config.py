@@ -77,6 +77,11 @@ APP_WINDOWS_URL = os.getenv(
     "https://github.com/ildarmaga/wdtt/releases/download/v1.5.76/pwdtt-client-windows-amd64.exe",
 ).strip()
 
+# OpenFlux: дефолтные параметры подключения (URL документа-транспорта и секрет шифрования).
+# Переопределяются из админ-панели (настройки openflux_url / openflux_secret).
+OPENFLUX_URL = os.getenv("OPENFLUX_URL", "").strip()
+OPENFLUX_SECRET = os.getenv("OPENFLUX_SECRET", "").strip()
+
 # Бот
 DB_PATH = os.getenv("DB_PATH", "bot.db").strip()
 POLL_INTERVAL = _as_int("POLL_INTERVAL", 10)
