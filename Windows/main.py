@@ -45,6 +45,13 @@ except ImportError:  # запуск из другой директории
     _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import conn_analytics as CA
 
+try:
+    import route_learning as RL
+except ImportError:  # запуск из другой директории
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import route_learning as RL
+
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 SUB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subscription.json")
 SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session.json")
@@ -362,8 +369,10 @@ class DirectRoutesManager:
 
 
 class SpeedDetector:
-    def __init__(self, config: dict, drm=None):
+    def __init__(self, config: dict, drm=None, learner=None):
         self.cfg = config.setdefault("speed_test", {})
+        self.learner = learner
+        self.connected = False
         self.cfg.setdefault("enabled", True)
         self.cfg.setdefault("threshold_ms", 3000)
         self.cfg.setdefault("timeout_s", 8)
@@ -390,10 +399,28 @@ class SpeedDetector:
             req = urllib.request.Request(url, headers={"User-Agent": "K.O. Gateway/1.0"})
             with urllib.request.urlopen(req, timeout=self.cfg.get("timeout_s", 8)) as r:
                 r.read(1)
-        except Exception:
+        except Exception as e:
+            self._remember(url, None, False, f"{type(e).__name__}: {e}")
             return {"ok": False, "ms": None, "error": "timeout_or_unreachable"}
         ms = int((_time.time() - t0) * 1000)
+        self._remember(url, ms, True, None)
         return {"ok": True, "ms": ms}
+
+    def _remember(self, url: str, ms, ok: bool, error: str | None):
+        """Запоминает замер: какой маршрут использовался и с каким результатом."""
+        if self.learner is None or self.drm is None:
+            return
+        if not self.learner.cfg.get("enabled", True):
+            return
+        host = urlparse(url).netloc or url
+        try:
+            route = RL.detect_current_route(host, self.drm, self.connected)
+        except Exception:
+            return
+        try:
+            self.learner.record(host, route, ms, ok, error)
+        except Exception:
+            pass
 
     def check_all(self) -> dict:
         import time as _time
@@ -660,7 +687,8 @@ class GatewayApp:
         self.connect_thread = None
         self.drm = DirectRoutesManager(self.config)
         self.conn_analyzer = CA.ConnectionAnalyzer(self.drm)
-        self.speed = SpeedDetector(self.config, self.drm)
+        self.learner = RL.RouteLearner(self.config)
+        self.speed = SpeedDetector(self.config, self.drm, self.learner)
         self.sub = Subscription(SUB_PATH)
         self.current_view = "main"
 
@@ -1175,6 +1203,7 @@ class GatewayApp:
         scheme = profile.get("scheme", "wdtt")
 
         self.connected = True
+        self.speed.connected = True
         self.connect_btn.config(text="Отключиться", bg="#374151")
         self.status_var.set("Подключение…")
         self.status_label.config(fg="#FBBF24")
@@ -1187,6 +1216,7 @@ class GatewayApp:
 
     def disconnect(self):
         self.connected = False
+        self.speed.connected = False
         if getattr(self, "openflux_proc", None):
             try:
                 self.openflux_proc.terminate()
@@ -1266,7 +1296,32 @@ class GatewayApp:
         self.root.after(0, lambda s=scheme, p=best["ping_ms"], h=best["http_ms"]: self._log(
             f"Выбран {s.upper()} (ping={p} мс, http={h if h else "'-'"} мс) — наиболее быстрый"))
 
+        self._apply_learned_routes()
+
         self._establish_connection(server, link, scheme)
+
+    def _apply_learned_routes(self):
+        """Применяет запомненные маршруты, если включено автоприменение.
+
+        Вызывается после подключения: к этому моменту известно, каким
+        маршрутом реально идёт трафик, и накопленные замеры можно применить.
+        """
+        if RL is None:
+            return
+        if not self.learner.cfg.get("enabled", True):
+            return
+        if not self.learner.cfg.get("auto_apply", True):
+            return
+        results = self.learner.apply_all(drm=self.drm)
+        if not results:
+            return
+        ok_count = sum(1 for r in results if r["ok"])
+        self.learner.save(CONFIG_PATH)
+        self.root.after(0, lambda: self._log(
+            f"Применены запомненные маршруты: {ok_count} из {len(results)}"))
+        for r in results:
+            if r["ok"]:
+                self.root.after(0, lambda m=r["message"]: self._log(f"  {m}"))
 
     def _measure_tcp_latency(self, server: str, scheme: str):
         ports = [56000, 56001, 56003] if scheme == "wdtt" else [443, 8443]
@@ -1728,6 +1783,63 @@ class GatewayApp:
         self.conn_list.bind("<<ListboxSelect>>", self._on_conn_select)
         self.conn_selected = None
 
+        # --- Запоминание лучших маршрутов ---
+        learn_card = T.card(self.body)
+        learn_card.pack(fill="x", pady=(0, 12))
+        tk.Label(learn_card, text="🧠 ЗАПОМИНАНИЕ ЛУЧШИХ МАРШРУТОВ", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9, "bold")).pack(anchor="w", padx=16, pady=(12, 6))
+
+        learn_row0 = tk.Frame(learn_card, bg=T.CARD)
+        learn_row0.pack(fill="x", padx=16, pady=(0, 8))
+        self.learn_enabled_var = tk.BooleanVar(
+            value=bool(self.learner.cfg.get("enabled", True)))
+        tk.Checkbutton(learn_row0, text="Запоминать маршруты",
+                       variable=self.learn_enabled_var, command=self._toggle_learning,
+                       bg=T.CARD, fg=T.TEXT, selectcolor=T.CARD, activebackground=T.CARD,
+                       activeforeground=T.TEXT, font=(T.FONT, 9)).pack(side="left")
+        self.learn_auto_var = tk.BooleanVar(
+            value=bool(self.learner.cfg.get("auto_apply", True)))
+        tk.Checkbutton(learn_row0, text="Применять автоматически",
+                       variable=self.learn_auto_var, command=self._toggle_learning,
+                       bg=T.CARD, fg=T.TEXT, selectcolor=T.CARD, activebackground=T.CARD,
+                       activeforeground=T.TEXT, font=(T.FONT, 9)).pack(side="left", padx=(12, 0))
+        tk.Label(learn_row0, text="Замеров для выбора:", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(side="left", padx=(16, 0))
+        self.learn_samples_var = tk.StringVar(
+            value=str(self.learner.cfg.get("min_samples", 3)))
+        T.dark_entry(learn_row0, textvariable=self.learn_samples_var, width=5,
+                     font=(T.FONT, 9)).pack(side="left", padx=(6, 0))
+
+        learn_row1 = tk.Frame(learn_card, bg=T.CARD)
+        learn_row1.pack(fill="x", padx=16, pady=(0, 8))
+        T.accent_button(learn_row1, text="Проверить и запомнить", command=self._learn_check,
+                        font=(T.FONT, 9, "bold"), width=19, height=1).pack(side="left")
+        T.ghost_button(learn_row1, text="A/B-тест", command=self._learn_ab_test,
+                       font=(T.FONT, 9), width=11, height=1).pack(side="left", padx=(8, 0))
+        T.ghost_button(learn_row1, text="Применить лучшие", command=self._learn_apply_all,
+                       font=(T.FONT, 9), width=14, height=1).pack(side="left", padx=(8, 0))
+        T.ghost_button(learn_row1, text="Сбросить", command=self._learn_reset,
+                       font=(T.FONT, 9), width=10, height=1).pack(side="left", padx=(8, 0))
+        self.learn_info_var = tk.StringVar(value="Маршруты запоминаются при проверке скорости")
+        tk.Label(learn_row1, textvariable=self.learn_info_var, bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9), anchor="w").pack(side="left", padx=(12, 0), fill="x", expand=True)
+
+        learn_row2 = tk.Frame(learn_card, bg=T.CARD)
+        learn_row2.pack(fill="x", padx=16, pady=(0, 12))
+        tk.Label(learn_row2, text="Домен", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9, "bold"), width=38, anchor="w").pack(side="left")
+        tk.Label(learn_row2, text="Лучший маршрут", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9, "bold"), width=16, anchor="w").pack(side="left")
+        tk.Label(learn_row2, text="Сейчас", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9, "bold"), width=12, anchor="w").pack(side="left")
+        self.learn_list = tk.Listbox(learn_row2, font=("Consolas", 9), height=6,
+                                     bg=T.INPUT_BG, fg=T.TEXT, selectbackground=T.ACCENT,
+                                     selectforeground="#ffffff", relief="flat", bd=0,
+                                     highlightthickness=1, highlightbackground=T.BORDER,
+                                     highlightcolor=T.ACCENT, activestyle="none")
+        self.learn_list.pack(fill="x", padx=16, pady=(2, 0))
+        self.learn_rows = []
+
         # --- Обход блокировок и замедлений ---
         blk_card = T.card(self.body)
         blk_card.pack(fill="x", pady=(0, 12))
@@ -1827,6 +1939,9 @@ class GatewayApp:
         self.refresh_speed_info()
         if hasattr(self, "conn_list"):
             self.root.after(300, self.refresh_conn_analytics)
+        if hasattr(self, "learn_list"):
+            self.root.after(350, lambda: self._show_learn_report(
+                self.learner.report(drm=self.drm)))
         ff = self.config.get("connection_failover", {})
         en = "вкл." if ff.get("enabled", True) else "выкл."
         order = " → ".join(ff.get("order", ["aivpn", "wdtt"])).upper()
@@ -1860,6 +1975,108 @@ class GatewayApp:
         self.drm.tcfg["enabled"] = bool(self.t_enabled_var.get())
         self._save_config()
         self._refresh_exc_info()
+
+    def _toggle_learning(self):
+        """Включает/выключает запоминание маршрутов."""
+        self.learner.cfg["enabled"] = bool(self.learn_enabled_var.get())
+        self.learner.cfg["auto_apply"] = bool(self.learn_auto_var.get())
+        try:
+            self.learner.cfg["min_samples"] = max(1, int(self.learn_samples_var.get()))
+        except ValueError:
+            self.learn_samples_var.set(str(self.learner.cfg.get("min_samples", 3)))
+        self._save_config()
+        self._log(f"Запоминание маршрутов: "
+                  f"{'вкл' if self.learner.cfg['enabled'] else 'выкл'}, "
+                  f"автоприменение: "
+                  f"{'вкл' if self.learner.cfg['auto_apply'] else 'выкл'}")
+
+    def _learn_check(self):
+        """Проверяет сайты и запоминает, через какой маршрут они работают."""
+        sites = list(self.speed.cfg.get("sites", []))
+        if not sites:
+            self.learn_info_var.set("Нет сайтов для проверки")
+            return
+        self.learn_info_var.set("Проверяю сайты…")
+
+        def worker():
+            for site in sites:
+                self.speed.check_site(site)
+            self.learner.save(CONFIG_PATH)
+            report = self.learner.report(drm=self.drm)
+            self.root.after(0, lambda: self._show_learn_report(report, "проверка завершена"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _learn_ab_test(self):
+        """Сравнивает прямой путь и путь через локальный SOCKS5 в одних условиях."""
+        socks = RL.find_local_socks()
+        if not socks:
+            self.learn_info_var.set("Локальный SOCKS5 не найден — A/B-тест недоступен")
+            self._log("A/B-тест: локальный SOCKS5 не найден (OpenFlux поднимает 127.0.0.1:1080)")
+            return
+        sites = list(self.speed.cfg.get("sites", []))
+        if not sites:
+            self.learn_info_var.set("Нет сайтов для проверки")
+            return
+        proxy_host, proxy_port = socks
+        self.learn_info_var.set(f"A/B-тест через {proxy_host}:{proxy_port}…")
+
+        def worker():
+            for site in sites:
+                host = urlparse(site).netloc or site
+                ok_d, ms_d, err_d = RL.measure_direct(site)
+                self.learner.record(host, RL.ROUTE_DIRECT, ms_d, ok_d, err_d)
+                ok_p, ms_p, err_p = RL.measure_via_socks5(site, proxy_host, proxy_port)
+                # Прокси — это физический путь VPN-туннеля
+                self.learner.record(host, RL.ROUTE_VPN, ms_p, ok_p, err_p)
+            self.learner.save(CONFIG_PATH)
+            report = self.learner.report(drm=self.drm)
+            self.root.after(0, lambda: self._show_learn_report(report, "A/B-тест завершён"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _learn_apply_all(self):
+        """Применяет запомненные лучшие маршруты ко всем доменам."""
+        results = self.learner.apply_all(drm=self.drm)
+        if not results:
+            self.learn_info_var.set("Нет маршрутов для применения")
+            return
+        ok_count = sum(1 for r in results if r["ok"])
+        self.learner.save(CONFIG_PATH)
+        self._log(f"Применено маршрутов: {ok_count} из {len(results)}")
+        for r in results:
+            self._log(f"  {r['domain']}: {r['message']}")
+        self.refresh_conn_analytics()
+        report = self.learner.report(drm=self.drm)
+        self._show_learn_report(report, f"применено {ok_count} из {len(results)}")
+
+    def _learn_reset(self):
+        """Сбрасывает накопленную статистику маршрутов."""
+        self.learner.clear()
+        self.learner.save(CONFIG_PATH)
+        self._show_learn_report([], "статистика сброшена")
+        self._log("Статистика маршрутов сброшена")
+
+    def _show_learn_report(self, report: list, note: str = ""):
+        """Показывает запомненные маршруты."""
+        if not hasattr(self, "learn_list"):
+            return
+        self.learn_list.delete(0, "end")
+        self.learn_rows = []
+        for rec in report:
+            route = rec.get("route")
+            label = RL.ROUTE_LABELS.get(route, "—") if route else "—"
+            avg = rec.get("avg_ms")
+            avg_txt = f" {avg} мс" if avg else ""
+            self.learn_list.insert("end",
+                                   f"{rec['domain']:<38} {label + avg_txt:<22} {rec.get('current_label', '')}")
+            self.learn_rows.append(rec)
+        known = len(report)
+        confident = sum(1 for r in report if r.get("confident"))
+        text = f"доменов: {known}, с достаточными замерами: {confident}"
+        if note:
+            text = f"{note} · {text}"
+        self.learn_info_var.set(text)
 
     def refresh_conn_analytics(self):
         """Пересчитывает аналитику типа соединений по всем известным доменам."""
@@ -2091,7 +2308,12 @@ class GatewayApp:
         def worker():
             results = self.speed.check_all()
             slow = self.speed.slow_sites()
+            self.learner.save(CONFIG_PATH)
             self.root.after(0, self.refresh_speed_info)
+            if hasattr(self, "learn_list"):
+                report = self.learner.report(drm=self.drm)
+                self.root.after(0, lambda: self._show_learn_report(
+                    report, "после проверки скорости"))
             if slow:
                 self.root.after(0, lambda: self._log(
                     f"Проверка завершена: {len(slow)} медленных/недоступных сайтов."))
