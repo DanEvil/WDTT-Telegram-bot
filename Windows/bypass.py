@@ -18,7 +18,11 @@ import ctypes
 import os
 import subprocess
 import sys
-import winreg
+
+try:
+    import winreg
+except ImportError:  # не-Windows (CI на Linux): модуль импортируется, но реестра нет
+    winreg = None
 
 # Пути zapret2 (установка Stable)
 ZAPRET_DIR = r"C:\Zapret\Stable"
@@ -288,8 +292,12 @@ def _latest_zapret_config() -> str | None:
 # Браузер: QUIC и DNS-over-HTTPS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _set_policy(key_path: str, name: str, value, kind=winreg.REG_DWORD) -> bool:
+def _set_policy(key_path: str, name: str, value, kind: int | None = None) -> bool:
     """Записывает значение в ветку реестра (создавая её)."""
+    if winreg is None:  # не-Windows
+        return False
+    if kind is None:
+        kind = winreg.REG_DWORD
     try:
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, key_path, 0,
                                 winreg.KEY_SET_VALUE | winreg.KEY_READ) as key:
@@ -335,7 +343,7 @@ def browser_set_doh(provider: str = "cloudflare") -> tuple[bool, str]:
     for path in (CHROME_POLICY, EDGE_POLICY):
         ok &= _set_policy(path, "DnsOverHttpsMode", 2)
         ok &= _set_policy(path, "DnsOverHttpsTemplates",
-                          template, winreg.REG_SZ)
+                          template, winreg.REG_SZ if winreg else None)
     if ok:
         return True, f"DNS-over-HTTPS ({provider}) включён — перезапустите браузер"
     return False, "Не удалось включить DNS-over-HTTPS"
@@ -344,6 +352,10 @@ def browser_set_doh(provider: str = "cloudflare") -> tuple[bool, str]:
 def browser_doh_state() -> dict:
     """Текущее состояние политик QUIC/DoH в Chrome и Edge."""
     out = {}
+    if winreg is None:  # не-Windows: политик браузера нет
+        for path, name in ((CHROME_POLICY, "Chrome"), (EDGE_POLICY, "Edge")):
+            out[name] = {"QuicAllowed": None, "DnsOverHttpsMode": None}
+        return out
     for path, name in ((CHROME_POLICY, "Chrome"), (EDGE_POLICY, "Edge")):
         state = {}
         for key, kind in (("QuicAllowed", "dword"), ("DnsOverHttpsMode", "dword")):
