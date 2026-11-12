@@ -7,3 +7,4 @@ venv/
 .deps/
 .tmp/
 orig_web_app.py
+OpenFlux/

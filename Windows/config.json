@@ -1,0 +1,86 @@
+{
+  "app_name": "K.O. Gateway",
+  "version": "1.0.0",
+  "profiles": [
+    {
+      "id": "wdtt",
+      "name": "WDTT VPN",
+      "scheme": "wdtt",
+      "default_server": "78.17.16.23",
+      "default_ports": "56000:56001:56003",
+      "description": "WDTT — VPN-панель K.O. Gateway (VK Turn, DTLS/WG/RAW)"
+    },
+    {
+      "id": "aivpn",
+      "name": "AIVPN",
+      "scheme": "aivpn",
+      "default_server": "",
+      "default_ports": "",
+      "description": "AIVPN — замаскированный UDP-туннель (infosave2007/aivpn)"
+    }
+  ],
+  "default_profile": "wdtt",
+  "auto_connect": false,
+  "minimize_to_tray": true,
+  "direct_routes": {
+    "enabled": true,
+    "url": "",
+    "domains": [
+      "yandex.ru",
+      "yandex.com",
+      "yandex.by",
+      "yandex.kz",
+      "yandex.uz",
+      "vk.com",
+      "vk.ru",
+      "vk.me",
+      "vkad.io",
+      "mail.ru",
+      "list.ru",
+      "bk.ru",
+      "inbox.ru",
+      "ok.ru",
+      "odnoklassniki.ru",
+      "rutube.ru",
+      "rutube.com",
+      "wildberries.ru",
+      "wb.ru",
+      "ozon.ru",
+      "ozon.com",
+      "avito.ru",
+      "avito.com",
+      "apple.com",
+      "itunes.apple.com",
+      "music.apple.com",
+      "apps.apple.com",
+      "icloud.com",
+      "mzstatic.com",
+      "ko-gateway.ru",
+      "auth.ko-gateway.ru",
+      "app.ko-gateway.ru"
+    ],
+    "ips": [
+      "95.163.0.0/16",
+      "185.71.76.0/27",
+      "185.165.12.0/22",
+      "217.29.53.0/24",
+      "94.100.176.0/20",
+      "185.102.220.0/22",
+      "17.0.0.0/8"
+    ],
+    "apps": [
+      "chrome.exe",
+      "msedge.exe",
+      "firefox.exe",
+      "opera.exe",
+      "iTunes.exe",
+      "Music.exe",
+      "AppleDevices.exe",
+      "Telegram.exe",
+      "WhatsApp.exe"
+    ],
+    "last_updated": null
+  },
+  "api_url": "http://127.0.0.1:8082",
+  "api_token": ""
+}

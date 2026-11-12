@@ -19,7 +19,10 @@ import hmac
 import json
 import logging
 import os
+import smtplib
 import time
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from urllib.parse import parse_qsl, unquote
 
 from aiohttp import web
@@ -332,6 +335,146 @@ async def h_auth(request: web.Request) -> web.Response:
         "stars_enabled": False,
         "ecosystem": ecosystem_payload(await app_windows_url_effective()),
     })
+
+# ---------- коды подтверждения email (в памяти, живут 15 минут) ----------
+
+_email_codes: dict[str, dict] = {}  # email -> {code, expires_at}
+
+EMAIL_CODE_TTL = 900  # 15 минут
+
+def _generate_email_code() -> str:
+    import random
+    return f"{random.randint(100000, 999999):06d}"
+
+def _send_email_code(to_email: str, code: str) -> bool:
+    """Отправляет код подтверждения на email.
+    Если SMTP не настроен — пишет код в лог (для разработки)."""
+    smtp_host = os.getenv("SMTP_HOST", "")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER", "")
+    smtp_pass = os.getenv("SMTP_PASS", "")
+    smtp_from = os.getenv("SMTP_FROM", smtp_user or "no-reply@ko-gateway.ru")
+
+    body = f"""\
+Код подтверждения для входа в K.O. Gateway: <b>{code}</b>
+Код действителен 15 минут.
+Если вы не запрашивали этот код — проигнорируйте это письмо."""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Код подтверждения входа — K.O. Gateway"
+    msg["From"] = smtp_from
+    msg["To"] = to_email
+    msg.attach(MIMEText(body, "html"))
+
+    if smtp_host and smtp_user and smtp_pass:
+        try:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as s:
+                s.starttls()
+                s.login(smtp_user, smtp_pass)
+                s.send_message(msg)
+            return True
+        except Exception:
+            log.exception("SMTP send failed")
+    # fallback: код в лог
+    log.info(f"EMAIL CODE for {to_email}: {code}")
+    return True
+
+async def h_email_send_code(request: web.Request) -> web.Response:
+    """POST /api/v1/auth/email/send-code — отправить код подтверждения на email."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+    email = str(body.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        return web.json_response({"error": "Укажите email"}, status=400)
+    code = _generate_email_code()
+    _email_codes[email] = {
+        "code": code,
+        "expires_at": time.time() + EMAIL_CODE_TTL,
+    }
+    if _send_email_code(email, code):
+        return web.json_response({"ok": True, "email": email})
+    return web.json_response({"error": "Не удалось отправить письмо"}, status=500)
+
+async def h_email_verify(request: web.Request) -> web.Response:
+    """POST /api/v1/auth/email/verify — проверить код и выдать токен."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+    email = str(body.get("email") or "").strip().lower()
+    code = str(body.get("code") or "").strip()
+    if not email or not code:
+        return web.json_response({"error": "Укажите email и код"}, status=400)
+    record = _email_codes.get(email)
+    if not record:
+        return web.json_response({"error": "Код не найден. Запросите код повторно."}, status=400)
+    if time.time() > record["expires_at"]:
+        del _email_codes[email]
+        return web.json_response({"error": "Код истёк. Запросите новый."}, status=400)
+    if record["code"] != code:
+        return web.json_response({"error": "Неверный код."}, status=400)
+    # код верный — создаём пользователя/сессию
+    uid = abs(hash(email)) % (10 ** 9)
+    del _email_codes[email]
+    return web.json_response({
+        "token": make_session(uid, config.TELEGRAM_TOKEN),
+        "user": {"id": uid, "email": email, "first_name": email.split("@")[0]},
+        "is_admin": is_admin_uid(uid),
+        "stars_enabled": False,
+        "ecosystem": ecosystem_payload(await app_windows_url_effective()),
+    })
+
+
+async def h_claim_trial(request: web.Request) -> web.Response:
+    """POST /api/v1/claim-trial — активировать пробный период на 3 дня."""
+    uid = user_id_from_request(request)
+    from db import claim_trial, has_used_trial, mark_trial_used, release_trial, init_db
+    from plans import TRIAL
+    await init_db()
+    if await has_used_trial(uid):
+        return web.json_response({"error": "Пробный период уже использован"}, status=409)
+    if not await claim_trial(uid):
+        return web.json_response({"error": "Пробный период уже использован"}, status=409)
+    try:
+        import bot as b  # lazy: избегаем циклического импорта
+        client, pwd, expires = await b.grant_access(uid, None, TRIAL)
+        await mark_trial_used(uid)
+        links = await b.links_json(client, pwd, (await __import__("db").get_customer(uid) or {}).get("sub_id"))
+        return web.json_response({"ok": True, "expires_at": expires, "plan": TRIAL, "links": links})
+    except Exception as e:
+        await release_trial(uid)
+        log.exception("api claim-trial: uid %s", uid)
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def h_connections(request: web.Request) -> web.Response:
+    """GET /api/v1/connections — ссылки подключения по аккаунту пользователя."""
+    uid = user_id_from_request(request)
+    from db import get_customer, get_server, init_db
+    await init_db()
+    customer = await get_customer(uid)
+    out = {}
+    # WDTT ссылка из сервера панели
+    if customer and customer.get("server_id"):
+        server = await get_server(int(customer["server_id"]))
+        if server and server.get("base_url"):
+            host = server["base_url"].replace("https://", "").replace("http://", "").rstrip("/")
+            out["wdtt"] = f"wdtt://{host}:56000:56001:56003:local:"
+    # AIVPN ссылка (из customer или дефолт)
+    if customer and customer.get("aivpn_server"):
+        out["aivpn"] = f"aivpn://{customer['aivpn_server']}"
+    else:
+        out["aivpn"] = "aivpn://"
+    # OpenFlux — из настроек пользователя или дефолтные пустые
+    out["openflux"] = {
+        "transport": customer.get("of_transport", "yandex") if customer else "yandex",
+        "url": customer.get("of_url", "") if customer else "",
+        "secret": customer.get("of_secret", "") if customer else "",
+        "inbound": customer.get("of_inbound", "socks5") if customer else "socks5",
+        "codec": customer.get("of_codec", "batched") if customer else "batched",
+    }
+    return web.json_response(out)
 
 
 async def h_ecosystem(request: web.Request) -> web.Response:
@@ -732,6 +875,10 @@ async def h_admin_settings_post(request: web.Request) -> web.Response:
 def register_v1_routes(app: web.Application, prefix: str = "/api/v1") -> None:
     """Монтирует единый API экосистемы в aiohttp-приложение (сайт или мини-апп)."""
     app.router.add_post(f"{prefix}/auth", h_auth)
+    app.router.add_post(f"{prefix}/auth/email/send-code", h_email_send_code)
+    app.router.add_post(f"{prefix}/auth/email/verify", h_email_verify)
+    app.router.add_post(f"{prefix}/claim-trial", h_claim_trial)
+    app.router.add_get(f"{prefix}/connections", h_connections)
     app.router.add_get(f"{prefix}/ecosystem", h_ecosystem)
     app.router.add_get(f"{prefix}/plans", h_plans)
     app.router.add_get(f"{prefix}/me", h_me)
