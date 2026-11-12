@@ -3,6 +3,17 @@
 Одна кнопка «Подключиться» для входа в экосистему K.O. Gateway, плюс карточка активной подписки и кнопка оплаты:
 - **WDTT** — VPN-панель K.O. Gateway (ссылки `wdtt://`, DTLS/WG/RAW)
 - **AIVPN** — замаскированный UDP-туннель (infosave2007/aivpn, ссылки `aivpn://`)
+- **OpenFlux** — TCP/UDP туннель с pluggable transports (p1neappleXpress/OpenFlux)
+
+## Оформление
+
+Интерфейс оформлен в красно-чёрной палитре сайта и Telegram Mini App (`static/site.css`, `static/style.css`): фон `#0a0a0c`, карточки `#141418`, акцент `#e01e2b`, текст `#f2f2f4`. Палитра и готовые виджеты вынесены в `Windows/theme.py`:
+
+- `T.card()` — карточка с тонкой рамкой
+- `T.accent_button()` / `T.ghost_button()` — кнопки с hover-эффектом
+- `T.dark_entry()` — поле ввода в тёмной теме
+- `T.setup_ttk_styles()` — стили combobox, вкладок и скроллбаров (тема clam)
+- `T.set_dark_titlebar()` — тёмный заголовок окна в Windows 10/11
 
 ## Быстрый старт
 
@@ -138,6 +149,7 @@ OpenFlux (p1neappleXpress/OpenFlux) — TCP/UDP туннель с pluggable tran
 ```
 Windows/
 ├── main.py           # приложение (tkinter, только стандартная библиотека)
+├── theme.py          # палитра сайта/Mini App и готовые виджеты
 ├── openflux.exe      # бинарник OpenFlux (клиентский туннель)
 ├── config.json       # профили WDTT / AIVPN / OpenFlux, токен API, URL сайта, исключения
 ├── subscription.json # кэш данных подписки (тариф, срок, устройства, трафик)

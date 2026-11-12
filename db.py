@@ -247,6 +247,17 @@ async def init_db() -> None:
                 value      TEXT NOT NULL,
                 updated_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS user_connections (
+                telegram_id INTEGER PRIMARY KEY,
+                aivpn_server TEXT NOT NULL DEFAULT '',
+                of_transport TEXT NOT NULL DEFAULT 'yandex',
+                of_url       TEXT NOT NULL DEFAULT '',
+                of_secret    TEXT NOT NULL DEFAULT '',
+                of_inbound   TEXT NOT NULL DEFAULT 'socks5',
+                of_codec     TEXT NOT NULL DEFAULT 'batched',
+                updated_at   INTEGER NOT NULL DEFAULT 0
+            );
             """
         )
         await _refresh_admin_cache()
@@ -393,6 +404,60 @@ async def set_payment_method(telegram_id: int, payment_method_id: str | None) ->
             "UPDATE customers SET payment_method_id = ? WHERE telegram_id = ?",
             (payment_method_id, telegram_id),
         )
+
+
+# ---------- user_connections (ссылки подключения по аккаунту) ----------
+
+DEFAULT_USER_CONNECTIONS = {
+    "aivpn_server": "",
+    "of_transport": "yandex",
+    "of_url": "",
+    "of_secret": "",
+    "of_inbound": "socks5",
+    "of_codec": "batched",
+}
+
+
+async def get_user_connections(telegram_id: int) -> dict:
+    """Настройки подключения пользователя (AIVPN-сервер, параметры OpenFlux)."""
+    async with conn() as db:
+        row = await (await db.execute(
+            "SELECT * FROM user_connections WHERE telegram_id = ?", (telegram_id,)
+        )).fetchone()
+    if not row:
+        return dict(DEFAULT_USER_CONNECTIONS)
+    out = dict(DEFAULT_USER_CONNECTIONS)
+    for key in DEFAULT_USER_CONNECTIONS:
+        val = row[key]
+        if val is not None:
+            out[key] = val
+    return out
+
+
+async def set_user_connections(telegram_id: int, **fields) -> dict:
+    """Сохраняет настройки подключения пользователя. Возвращает итоговые значения."""
+    allowed = set(DEFAULT_USER_CONNECTIONS)
+    data = {k: str(v) for k, v in fields.items() if k in allowed}
+    current = await get_user_connections(telegram_id)
+    current.update(data)
+    async with conn() as db:
+        await db.execute(
+            """INSERT INTO user_connections
+                   (telegram_id, aivpn_server, of_transport, of_url, of_secret, of_inbound, of_codec, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(telegram_id) DO UPDATE SET
+                   aivpn_server = excluded.aivpn_server,
+                   of_transport = excluded.of_transport,
+                   of_url       = excluded.of_url,
+                   of_secret    = excluded.of_secret,
+                   of_inbound   = excluded.of_inbound,
+                   of_codec     = excluded.of_codec,
+                   updated_at   = excluded.updated_at""",
+            (telegram_id, current["aivpn_server"], current["of_transport"],
+             current["of_url"], current["of_secret"], current["of_inbound"],
+             current["of_codec"], int(time.time())),
+        )
+    return current
 
 
 async def list_autorenew_customers() -> list[dict]:

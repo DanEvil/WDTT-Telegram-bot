@@ -342,6 +342,21 @@ _email_codes: dict[str, dict] = {}  # email -> {code, expires_at}
 
 EMAIL_CODE_TTL = 900  # 15 минут
 
+# Диапазон uid для email-аккаунтов: 10^9..2*10^9.
+# Настоящие telegram_id меньше 10^9, поэтому пересечения с ними нет.
+EMAIL_UID_BASE = 10 ** 9
+
+def email_uid(email: str) -> int:
+    """Стабильный числовой id пользователя по email.
+
+    Использует sha256, а не hash(): встроенный hash() для строк
+    рандомизируется при каждом запуске интерпретатора (PYTHONHASHSEED),
+    из-за чего после рестарта сервера тот же email получал бы другой id
+    и терял подписку, пробный период и привязки.
+    """
+    digest = hashlib.sha256(email.strip().lower().encode("utf-8")).hexdigest()
+    return EMAIL_UID_BASE + (int(digest[:12], 16) % (10 ** 9))
+
 def _generate_email_code() -> str:
     import random
     return f"{random.randint(100000, 999999):06d}"
@@ -415,7 +430,10 @@ async def h_email_verify(request: web.Request) -> web.Response:
     if record["code"] != code:
         return web.json_response({"error": "Неверный код."}, status=400)
     # код верный — создаём пользователя/сессию
-    uid = abs(hash(email)) % (10 ** 9)
+    # uid из email должен быть СТАБИЛЬНЫМ между перезапусками сервера,
+    # иначе после рестарта пользователь получит другой id и потеряет
+    # подписку/пробный период (hash() рандомизируется per-process).
+    uid = email_uid(email)
     del _email_codes[email]
     return web.json_response({
         "token": make_session(uid, config.TELEGRAM_TOKEN),
@@ -451,30 +469,57 @@ async def h_claim_trial(request: web.Request) -> web.Response:
 async def h_connections(request: web.Request) -> web.Response:
     """GET /api/v1/connections — ссылки подключения по аккаунту пользователя."""
     uid = user_id_from_request(request)
-    from db import get_customer, get_server, init_db
+    from db import get_customer, get_user_connections, init_db
     await init_db()
     customer = await get_customer(uid)
-    out = {}
-    # WDTT ссылка из сервера панели
-    if customer and customer.get("server_id"):
-        server = await get_server(int(customer["server_id"]))
-        if server and server.get("base_url"):
-            host = server["base_url"].replace("https://", "").replace("http://", "").rstrip("/")
-            out["wdtt"] = f"wdtt://{host}:56000:56001:56003:local:"
-    # AIVPN ссылка (из customer или дефолт)
-    if customer and customer.get("aivpn_server"):
-        out["aivpn"] = f"aivpn://{customer['aivpn_server']}"
-    else:
-        out["aivpn"] = "aivpn://"
-    # OpenFlux — из настроек пользователя или дефолтные пустые
+    prefs = await get_user_connections(uid)
+    out: dict = {}
+
+    # WDTT: настоящая ссылка из панели (с паролем и vk_hash)
+    if customer and customer.get("wdtt_password"):
+        try:
+            import bot as b  # lazy: избегаем циклического импорта
+            client = await b.get_client(customer.get("server_id"))
+            links = await b.links_json(client, customer["wdtt_password"], customer.get("sub_id"))
+            if links:
+                out["wdtt"] = links.get("windows") or links.get("universal") or links.get("android")
+        except Exception as e:
+            log.warning("h_connections: панель недоступна для uid %s: %s", uid, e)
+
+    # AIVPN: адрес сервера из настроек пользователя
+    aivpn_server = (prefs.get("aivpn_server") or "").strip()
+    out["aivpn"] = f"aivpn://{aivpn_server}" if aivpn_server else ""
+
+    # OpenFlux: параметры транспорта из настроек пользователя
     out["openflux"] = {
-        "transport": customer.get("of_transport", "yandex") if customer else "yandex",
-        "url": customer.get("of_url", "") if customer else "",
-        "secret": customer.get("of_secret", "") if customer else "",
-        "inbound": customer.get("of_inbound", "socks5") if customer else "socks5",
-        "codec": customer.get("of_codec", "batched") if customer else "batched",
+        "transport": prefs.get("of_transport") or "yandex",
+        "url": prefs.get("of_url") or "",
+        "secret": prefs.get("of_secret") or "",
+        "inbound": prefs.get("of_inbound") or "socks5",
+        "codec": prefs.get("of_codec") or "batched",
     }
     return web.json_response(out)
+
+
+async def h_connections_save(request: web.Request) -> web.Response:
+    """POST /api/v1/connections/save — сохранить настройки подключения пользователя."""
+    uid = user_id_from_request(request)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+    from db import init_db, set_user_connections
+    await init_db()
+    saved = await set_user_connections(
+        uid,
+        aivpn_server=body.get("aivpn_server", ""),
+        of_transport=body.get("of_transport", "yandex"),
+        of_url=body.get("of_url", ""),
+        of_secret=body.get("of_secret", ""),
+        of_inbound=body.get("of_inbound", "socks5"),
+        of_codec=body.get("of_codec", "batched"),
+    )
+    return web.json_response({"ok": True, "connections": saved})
 
 
 async def h_ecosystem(request: web.Request) -> web.Response:
@@ -879,6 +924,7 @@ def register_v1_routes(app: web.Application, prefix: str = "/api/v1") -> None:
     app.router.add_post(f"{prefix}/auth/email/verify", h_email_verify)
     app.router.add_post(f"{prefix}/claim-trial", h_claim_trial)
     app.router.add_get(f"{prefix}/connections", h_connections)
+    app.router.add_post(f"{prefix}/connections/save", h_connections_save)
     app.router.add_get(f"{prefix}/ecosystem", h_ecosystem)
     app.router.add_get(f"{prefix}/plans", h_plans)
     app.router.add_get(f"{prefix}/me", h_me)

@@ -13,6 +13,13 @@ from tkinter import ttk, messagebox, scrolledtext
 from datetime import datetime
 import winreg
 
+try:
+    import theme as T
+except ImportError:  # запуск из другой директории
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import theme as T
+
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 SUB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subscription.json")
 SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session.json")
@@ -128,6 +135,32 @@ DEFAULT_CONFIG = {
         "last_updated": None,
     },
 }
+
+
+def _merge_config(loaded: dict, defaults: dict) -> dict:
+    """Сливает пользовательский конфиг с значениями по умолчанию.
+
+    Секции- словари дополняются недостающими ключами; списки профилей
+    дополняются профилями, которых нет в файле (по id), чтобы новые
+    протоколы появлялись без ручной правки config.json.
+    """
+    out = dict(defaults)
+    for key, val in (loaded or {}).items():
+        if key == "profiles" and isinstance(val, list):
+            merged = []
+            by_id = {p.get("id"): p for p in val if isinstance(p, dict)}
+            for dp in defaults.get("profiles", []):
+                dp_id = dp.get("id")
+                merged.append({**dp, **by_id.pop(dp_id, {})} if dp_id in by_id else dict(dp))
+            for extra in val:
+                if isinstance(extra, dict) and extra.get("id") in by_id:
+                    merged.append(by_id.pop(extra["id"]))
+            out["profiles"] = merged
+        elif isinstance(val, dict) and isinstance(defaults.get(key), dict):
+            out[key] = {**defaults[key], **val}
+        else:
+            out[key] = val
+    return out
 
 
 class Subscription:
@@ -378,87 +411,105 @@ class LoginWindow:
 
         self.win = tk.Toplevel(parent)
         self.win.title("K.O. Gateway — вход")
-        self.win.geometry("420x360")
+        self.win.geometry("480x560")
         self.win.resizable(False, False)
         self.win.transient(parent)
         self.win.grab_set()
+        self.win.configure(bg=T.BG)
+        T.set_dark_titlebar(self.win)
+        T.setup_ttk_styles(self.win)
 
-        pad = {"padx": 24, "pady": 20}
-
-        header = tk.Frame(self.win, bg="#14161A", height=64)
+        header = tk.Frame(self.win, bg=T.BG, height=72)
         header.pack(fill="x")
         header.pack_propagate(False)
-        tk.Label(header, text='K.O. Gateway', bg='#14161A', fg='#FFFFFF',
-                 font=('Segoe UI', 16, 'bold')).pack(side='left', padx=20, pady=16)
+        mark = tk.Frame(header, bg=T.ACCENT, width=44, height=44)
+        mark.pack(side="left", padx=(20, 12), pady=14)
+        mark.pack_propagate(False)
+        tk.Label(mark, text="K.O", bg=T.ACCENT, fg="#ffffff",
+                 font=(T.FONT, 13, "bold")).pack(expand=True)
+        head_txt = tk.Frame(header, bg=T.BG)
+        head_txt.pack(side="left", pady=14)
+        tk.Label(head_txt, text="K.O. Gateway", bg=T.BG, fg=T.TEXT,
+                 font=(T.FONT, 17, "bold"), anchor="w").pack(anchor="w")
+        tk.Label(head_txt, text="Вход в аккаунт", bg=T.BG, fg=T.MUTED,
+                 font=(T.FONT, 9), anchor="w").pack(anchor="w")
 
-        body = tk.Frame(self.win)
-        body.pack(fill="both", expand=True, **pad)
+        body = tk.Frame(self.win, bg=T.BG, padx=20, pady=16)
+        body.pack(fill="both", expand=True)
 
-        tk.Label(body, text="Вход в приложение", font=("Segoe UI", 14, "bold")).pack(anchor="w", pady=(0, 16))
+        tk.Label(body, text="Вход в приложение", bg=T.BG, fg=T.TEXT,
+                 font=(T.FONT, 14, "bold")).pack(anchor="w", pady=(0, 16))
 
         nb = ttk.Notebook(body)
         nb.pack(fill="both", expand=True)
+        T.style_notebook(nb)
 
         # --- Вкладка Telegram ---
-        tg_frame = tk.Frame(nb)
+        tg_frame = tk.Frame(nb, highlightthickness=0, bd=0)
         nb.add(tg_frame, text="Telegram")
 
-        tk.Label(tg_frame, text="Вход через Telegram бота", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(10, 6))
-        tk.Label(tg_frame, text="Нажмите кнопку ниже, чтобы открыть бота в браузере и привязать аккаунт:",
-                 font=("Segoe UI", 9), fg="#6B7280").pack(anchor="w", pady=(0, 10))
+        tg_frame.configure(bg=T.CARD)
+        tk.Label(tg_frame, text="Вход через Telegram бота", bg=T.CARD, fg=T.TEXT,
+                 font=(T.FONT, 11, "bold")).pack(anchor="w", padx=16, pady=(14, 6))
+        tk.Label(tg_frame, text="Откройте бота в браузере и привяжите аккаунт:",
+                 bg=T.CARD, fg=T.MUTED, font=(T.FONT, 9)).pack(anchor="w", padx=16, pady=(0, 10))
 
-        btn_tg = tk.Button(tg_frame, text="Открыть бота @KO_Gateway_bot",
-                           command=self._open_tg_bot,
-                           bg="#E01E2B", fg="#FFFFFF", relief="flat", cursor="hand2",
-                           font=("Segoe UI", 10, "bold"), width=30, height=2)
-        btn_tg.pack(anchor="w", pady=(0, 8))
+        T.accent_button(tg_frame, text="Открыть бота @KO_Gateway_bot",
+                        command=self._open_tg_bot, width=30, height=2).pack(
+            anchor="w", padx=16, pady=(0, 12))
 
-        tk.Label(tg_frame, text="Или введите код привязки из бота (/bind):", font=("Segoe UI", 9)).pack(anchor="w", pady=(14, 4))
+        tk.Label(tg_frame, text="Или введите код привязки из бота (/bind):",
+                 bg=T.CARD, fg=T.MUTED, font=(T.FONT, 9)).pack(anchor="w", padx=16, pady=(0, 4))
         self.bind_code_var = tk.StringVar()
-        bind_entry = tk.Entry(tg_frame, textvariable=self.bind_code_var, width=30, font=("Segoe UI", 10))
-        bind_entry.pack(anchor="w", pady=(0, 8))
-        tk.Button(tg_frame, text="Подтвердить код", command=self._confirm_bind_code,
-                  bg="#2F343E", fg="#FFFFFF", relief="flat", cursor="hand2",
-                  font=("Segoe UI", 9), width=20).pack(anchor="w", pady=(0, 10))
+        T.dark_entry(tg_frame, textvariable=self.bind_code_var, width=30,
+                     font=(T.FONT, 10)).pack(anchor="w", padx=16, pady=(0, 8))
+        T.ghost_button(tg_frame, text="Подтвердить код", command=self._confirm_bind_code,
+                       width=20, font=(T.FONT, 9)).pack(anchor="w", padx=16, pady=(0, 14))
 
         # --- Вкладка Почта ---
-        mail_frame = tk.Frame(nb)
+        mail_frame = tk.Frame(nb, bg=T.CARD, highlightthickness=0, bd=0)
         nb.add(mail_frame, text="Почта")
 
-        tk.Label(mail_frame, text="Вход через электронную почту", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(10, 6))
-        tk.Label(mail_frame, text="Введите ваш email и пароль, затем введите код из письма:", font=("Segoe UI", 9), fg="#6B7280").pack(anchor="w", pady=(0, 10))
+        tk.Label(mail_frame, text="Вход через электронную почту", bg=T.CARD, fg=T.TEXT,
+                 font=(T.FONT, 11, "bold")).pack(anchor="w", padx=16, pady=(14, 6))
+        tk.Label(mail_frame, text="Введите email и пароль, затем код из письма:",
+                 bg=T.CARD, fg=T.MUTED, font=(T.FONT, 9)).pack(anchor="w", padx=16, pady=(0, 10))
 
         # Поля email и пароля
-        tk.Label(mail_frame, text="Email:", font=("Segoe UI", 9)).pack(anchor="w", pady=(6, 2))
+        tk.Label(mail_frame, text="Email", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(anchor="w", padx=16, pady=(6, 2))
         self.email_var = tk.StringVar()
-        tk.Entry(mail_frame, textvariable=self.email_var, width=30, font=("Segoe UI", 10)).pack(anchor="w", pady=(0, 8))
+        T.dark_entry(mail_frame, textvariable=self.email_var, width=30,
+                     font=(T.FONT, 10)).pack(anchor="w", padx=16, pady=(0, 8))
 
-        tk.Label(mail_frame, text="Пароль:", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 2))
+        tk.Label(mail_frame, text="Пароль", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(anchor="w", padx=16, pady=(8, 2))
         self.password_var = tk.StringVar()
-        tk.Entry(mail_frame, textvariable=self.password_var, width=30, font=("Segoe UI", 10), show="*").pack(anchor="w", pady=(0, 8))
+        T.dark_entry(mail_frame, textvariable=self.password_var, width=30,
+                     font=(T.FONT, 10), show="*").pack(anchor="w", padx=16, pady=(0, 8))
 
         # Кнопка отправки кода
-        tk.Button(mail_frame, text="Отправить код на email", command=self._send_email_code,
-                  bg="#2F343E", fg="#FFFFFF", relief="flat", cursor="hand2",
-                  font=("Segoe UI", 10, "bold"), width=25).pack(anchor="w", pady=(10, 8))
+        T.ghost_button(mail_frame, text="Отправить код на email", command=self._send_email_code,
+                       width=25, font=(T.FONT, 10, "bold")).pack(anchor="w", padx=16, pady=(10, 8))
 
         # Поле кода подтверждения (скрыто до отправки)
-        self.code_frame = tk.Frame(mail_frame)
-        tk.Label(self.code_frame, text="Код подтверждения:", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 2))
+        self.code_frame = tk.Frame(mail_frame, bg=T.CARD)
+        tk.Label(self.code_frame, text="Код подтверждения", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(anchor="w", padx=16, pady=(8, 2))
         self.code_var = tk.StringVar()
-        tk.Entry(self.code_frame, textvariable=self.code_var, width=15, font=("Segoe UI", 10)).pack(anchor="w", pady=(0, 8))
-        tk.Button(self.code_frame, text="Подтвердить код", command=self._verify_email_code,
-                  bg="#E01E2B", fg="#FFFFFF", relief="flat", cursor="hand2",
-                  font=("Segoe UI", 10, "bold"), width=20).pack(anchor="w", pady=(0, 10))
+        T.dark_entry(self.code_frame, textvariable=self.code_var, width=15,
+                     font=(T.FONT, 10)).pack(anchor="w", padx=16, pady=(0, 8))
+        T.accent_button(self.code_frame, text="Подтвердить код", command=self._verify_email_code,
+                        width=20, font=(T.FONT, 10, "bold")).pack(anchor="w", padx=16, pady=(0, 14))
 
         # --- Статус ---
         self.login_status_var = tk.StringVar(value="")
-        tk.Label(body, textvariable=self.login_status_var, fg="#EF4444", font=("Segoe UI", 9)).pack(anchor="w", pady=(10, 0))
+        tk.Label(body, textvariable=self.login_status_var, bg=T.BG, fg=T.ERR,
+                 font=(T.FONT, 9), wraplength=400, justify="left").pack(anchor="w", pady=(10, 0))
 
         # --- Кнопка отмены ---
-        tk.Button(body, text="Пропустить (без входа)", command=self._skip_login,
-                  bg="#374151", fg="#FFFFFF", relief="flat", cursor="hand2",
-                  font=("Segoe UI", 9)).pack(anchor="w", pady=(16, 0))
+        T.ghost_button(body, text="Пропустить (без входа)", command=self._skip_login,
+                       font=(T.FONT, 9)).pack(anchor="w", pady=(16, 0))
 
     def _open_tg_bot(self):
         webbrowser.open("https://t.me/KO_Gateway_bot")
@@ -572,8 +623,10 @@ class GatewayApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("K.O. Gateway")
-        self.root.geometry("640x700")
-        self.root.resizable(False, False)
+        self.root.geometry("720x860")
+        self.root.minsize(680, 720)
+        T.apply_root(self.root)
+        T.setup_ttk_styles(self.root)
 
         self.config = self._load_config()
         self.profiles = self.config.get("profiles", DEFAULT_CONFIG["profiles"])
@@ -693,35 +746,35 @@ class GatewayApp:
     def _show_trial_dialog(self, token: str):
         dlg = tk.Toplevel(self.root)
         dlg.title("Пробный период")
-        dlg.geometry("420x260")
+        dlg.geometry("440x340")
         dlg.transient(self.root)
         dlg.grab_set()
-        dlg.configure(bg="#14161A")
+        dlg.configure(bg=T.CARD)
+        T.set_dark_titlebar(dlg)
 
         tk.Label(dlg, text="🎁 Пробный период 3 дня — бесплатно",
-                 bg="#14161A", fg="#FFFFFF",
-                 font=("Segoe UI", 12, "bold")).pack(pady=(20, 8))
-        tk.Label(dlg, text="Новый пользователь? Активируйте пробный период:\n"
-                           "• 3 дня доступа\n• 5 ГБ трафика\n• 1 устройство\n"
-                           "• После окончания можно оформить платный тариф",
-                 bg="#14161A", fg="#CBD5E1", font=("Segoe UI", 10),
-                 justify="center").pack(pady=(0, 16))
+                 bg=T.ACCENT, fg="#ffffff",
+                 font=(T.FONT, 13, "bold")).pack(fill="x", pady=(0, 1))
+        body = tk.Frame(dlg, bg=T.CARD, padx=20, pady=18)
+        body.pack(fill="both", expand=True)
+        tk.Label(body, text="Новый пользователь? Активируйте пробный период:",
+                 bg=T.CARD, fg=T.TEXT, font=(T.FONT, 10)).pack(pady=(0, 10))
+        for item in ("• 3 дня доступа", "• 5 ГБ трафика", "• 1 устройство",
+                     "• После окончания можно оформить платный тариф"):
+            tk.Label(body, text=item, bg=T.CARD, fg=T.MUTED,
+                     font=(T.FONT, 10)).pack(anchor="w", pady=1)
 
-        btn_frame = tk.Frame(dlg, bg="#14161A")
-        btn_frame.pack(pady=(0, 20))
+        btn_frame = tk.Frame(body, bg=T.CARD)
+        btn_frame.pack(pady=(16, 0))
 
         def activate():
             dlg.destroy()
             self._activate_trial(token)
 
-        tk.Button(btn_frame, text="Активировать пробный период",
-                  command=activate, bg="#E01E2B", fg="#FFFFFF",
-                  relief="flat", cursor="hand2",
-                  font=("Segoe UI", 10, "bold"), width=22).pack(side="left", padx=6)
-        tk.Button(btn_frame, text="Позже",
-                  command=dlg.destroy, bg="#374151", fg="#FFFFFF",
-                  relief="flat", cursor="hand2",
-                  font=("Segoe UI", 10), width=12).pack(side="left", padx=6)
+        T.accent_button(btn_frame, text="Активировать пробный период",
+                        command=activate, width=24, height=1).pack(side="left", padx=6)
+        T.ghost_button(btn_frame, text="Позже", command=dlg.destroy,
+                       width=10, height=1).pack(side="left", padx=6)
 
     def _activate_trial(self, token: str):
         """Активирует пробный период через API."""
@@ -738,7 +791,8 @@ class GatewayApp:
             with urllib.request.urlopen(req, timeout=15) as r:
                 resp = json.loads(r.read().decode("utf-8", "replace"))
         except Exception as e:
-            self._log(f"Ошибка активации пробного периода: {e}")
+            err = str(e)
+            self.root.after(0, lambda: self._log(f"Ошибка активации пробного периода: {err}"))
             return
         if resp.get("ok"):
             self._log(f"Пробный период активирован до {resp.get('expires_at', '—')}")
@@ -747,11 +801,18 @@ class GatewayApp:
             self._log(resp.get("error", "Не удалось активировать пробный период"))
 
     def _load_config(self):
+        """Читает config.json и дополняет его значениями по умолчанию.
+
+        Файл пользователя может быть старым (без профиля OpenFlux, без
+        connection_failover и т.п.) — без слияния с DEFAULT_CONFIG новые
+        профили и секции просто не появлялись бы в приложении.
+        """
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                loaded = json.load(f)
         except Exception:
-            return DEFAULT_CONFIG
+            loaded = {}
+        return _merge_config(loaded, DEFAULT_CONFIG)
 
     def _save_config(self):
         try:
@@ -761,157 +822,229 @@ class GatewayApp:
             self._log(f"Не удалось сохранить конфиг: {e}")
 
     def _build_ui(self):
-        pad = {"padx": 16, "pady": 10}
+        pad = {"padx": 18, "pady": 12}
 
-        header = tk.Frame(self.root, bg="#14161A", height=56)
+        # ── шапка: логотип + название, как .topbar/.header на сайте ──
+        header = tk.Frame(self.root, bg=T.BG, height=72)
         header.pack(fill="x")
         header.pack_propagate(False)
-        tk.Label(header, text='K.O. Gateway', bg='#14161A', fg='#FFFFFF',
-                 font=('Segoe UI', 16, 'bold')).pack(side='left', padx=16, pady=14)
+        mark = tk.Frame(header, bg=T.ACCENT, width=44, height=44)
+        mark.pack(side="left", padx=(18, 12), pady=14)
+        mark.pack_propagate(False)
+        tk.Label(mark, text="K.O", bg=T.ACCENT, fg="#ffffff",
+                 font=(T.FONT, 13, "bold")).pack(expand=True)
+        head_txt = tk.Frame(header, bg=T.BG)
+        head_txt.pack(side="left", pady=14)
+        tk.Label(head_txt, text="K.O. Gateway", bg=T.BG, fg=T.TEXT,
+                 font=(T.FONT, 17, "bold"), anchor="w").pack(anchor="w")
+        tk.Label(head_txt, text="VPN-клиент экосистемы K.O. Gateway",
+                 bg=T.BG, fg=T.MUTED, font=(T.FONT, 9), anchor="w").pack(anchor="w")
+        self.header_status = tk.Label(header, text="", bg=T.BG, fg=T.MUTED,
+                                      font=(T.FONT, 9))
+        self.header_status.pack(side="right", padx=18)
 
-        self.body = tk.Frame(self.root)
-        self.body.pack(fill="both", expand=True, **pad)
-
-        nav = tk.Frame(self.root, bg="#2F343E", height=48)
+        # ── нижняя навигация (пакуется до body, чтобы body не занял всё место) ──
+        nav = tk.Frame(self.root, bg=T.NAV_BG, height=58,
+                       highlightbackground=T.BORDER, highlightthickness=1)
         nav.pack(fill="x", side="bottom")
         nav.pack_propagate(False)
         self.nav_main_btn = tk.Button(
-            nav, text="Главная", command=self.show_main,
-            bg="#E01E2B", fg="#FFFFFF", font=("Segoe UI", 11, "bold"),
-            relief="flat", cursor="hand2", width=14, height=2)
-        self.nav_main_btn.pack(side="left", padx=10, pady=8)
+            nav, text="⌂  Главная", command=self.show_main,
+            bg=T.ACCENT, fg="#ffffff", font=(T.FONT, 11, "bold"),
+            relief="flat", bd=0, cursor="hand2", width=16, height=2,
+            activebackground=T.ACCENT_HOVER)
+        self.nav_main_btn.pack(side="left", padx=14, pady=9)
         self.nav_settings_btn = tk.Button(
-            nav, text="Настройки", command=self.show_settings,
-            bg="#374151", fg="#FFFFFF", font=("Segoe UI", 11),
-            relief="flat", cursor="hand2", width=14, height=2)
-        self.nav_settings_btn.pack(side="left", padx=10, pady=8)
+            nav, text="⚙  Настройки", command=self.show_settings,
+            bg=T.NAV_BG, fg=T.MUTED, font=(T.FONT, 11),
+            relief="flat", bd=0, cursor="hand2", width=16, height=2,
+            activebackground=T.CARD_HI, activeforeground=T.TEXT,
+            highlightthickness=0)
+        self.nav_settings_btn.pack(side="left", padx=(0, 14), pady=9)
+
+        # Прокручиваемое тело: настройки не помещаются в окно
+        self.scroll_canvas = tk.Canvas(self.root, bg=T.BG, highlightthickness=0, bd=0)
+        self.scroll_canvas.pack(fill="both", expand=True)
+        # ttk.Scrollbar (не tk) — умеет стилизоваться через Style под тёмную тему
+        self.scrollbar = ttk.Scrollbar(self.root, orient="vertical",
+                                       command=self.scroll_canvas.yview,
+                                       style="Vertical.TScrollbar")
+        self.scrollbar.pack(side="right", fill="y")
+        self.scroll_canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.body = tk.Frame(self.scroll_canvas, bg=T.BG, padx=18, pady=12)
+        self.body_window = self.scroll_canvas.create_window((0, 0), window=self.body, anchor="nw")
+        self.body.bind("<Configure>", self._on_body_configure)
+        self.scroll_canvas.bind("<Configure>", self._on_canvas_configure)
+        for widget in (self.scroll_canvas, self.body):
+            widget.bind("<MouseWheel>", self._on_mouse_wheel)
 
         self.show_main()
 
 
     def show_main(self):
         self.current_view = "main"
-        self.nav_main_btn.config(bg="#E01E2B", font=("Segoe UI", 11, "bold"))
-        self.nav_settings_btn.config(bg="#374151", font=("Segoe UI", 11))
+        self.nav_main_btn.config(bg=T.ACCENT, fg="#ffffff",
+                                 font=(T.FONT, 11, "bold"))
+        self.nav_settings_btn.config(bg=T.NAV_BG, fg=T.MUTED,
+                                     font=(T.FONT, 11))
         self._clear_body()
         self._build_main_view()
 
     def show_settings(self):
         self.current_view = "settings"
-        self.nav_main_btn.config(bg="#374151", font=("Segoe UI", 11))
-        self.nav_settings_btn.config(bg="#E01E2B", font=("Segoe UI", 11, "bold"))
+        self.nav_main_btn.config(bg=T.NAV_BG, fg=T.MUTED,
+                                 font=(T.FONT, 11))
+        self.nav_settings_btn.config(bg=T.ACCENT, fg="#ffffff",
+                                     font=(T.FONT, 11, "bold"))
         self._clear_body()
         self._build_settings_view()
+
+    def _on_body_configure(self, _event):
+        self.scroll_canvas.configure(scrollregion=self.scroll_canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event):
+        self.scroll_canvas.itemconfigure(self.body_window, width=event.width)
+
+    def _on_mouse_wheel(self, event):
+        self.scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _clear_body(self):
         for w in self.body.winfo_children():
             w.destroy()
+        self.body.configure(bg=T.BG)
 
     def _build_main_view(self):
-        pad = {"padx": 18, "pady": 10}
+        # ── профиль подключения ──
+        prof_card = T.card(self.body)
+        prof_card.pack(fill="x", pady=(0, 12))
+        tk.Label(prof_card, text="ПРОФИЛЬ ПОДКЛЮЧЕНИЯ", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9, "bold")).pack(anchor="w", padx=16, pady=(12, 6))
+        prof_row = tk.Frame(prof_card, bg=T.CARD)
+        prof_row.pack(fill="x", padx=16, pady=(0, 12))
+        tk.Label(prof_row, text="Профиль", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 10)).pack(side="left")
+        self.profile_combo = ttk.Combobox(
+            prof_row, textvariable=self.profile_var, state="readonly",
+            values=[p["name"] for p in self.profiles], width=24,
+            font=(T.FONT, 10))
+        self.profile_combo.pack(side="left", padx=(10, 8))
+        self.profile_combo.bind("<<ComboboxSelected>>", self._on_profile_changed)
+        T.style_combobox(self.profile_combo)
+        tk.Label(prof_row, textvariable=self.desc_var, bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9), anchor="w").pack(side="left", fill="x", expand=True)
 
-        btn_frame = tk.Frame(self.body)
-        btn_frame.pack(fill="x", pady=(4, 14))
-        self.connect_btn = tk.Button(
-            btn_frame, text="Подключиться", command=self.toggle_connection,
-            bg="#E01E2B", fg="#FFFFFF", font=("Segoe UI", 13, "bold"),
-            relief="flat", cursor="hand2", width=20, height=2)
+        # ── кнопка подключения ──
+        btn_frame = tk.Frame(self.body, bg=T.BG)
+        btn_frame.pack(fill="x", pady=(0, 12))
+        self.connect_btn = T.accent_button(
+            btn_frame, text="⚡  Подключиться", command=self.toggle_connection,
+            font=(T.FONT, 14, "bold"), width=22, height=2)
         self.connect_btn.pack(side="left", padx=(0, 10))
+        self.status_var = tk.StringVar(value="Не подключено")
+        self.status_label = tk.Label(btn_frame, textvariable=self.status_var, fg=T.ERR,
+                                     bg=T.BG, font=(T.FONT, 12, "bold"))
+        self.status_label.pack(side="left", padx=(6, 0))
 
-        # --- Выбор тарифа и оплата ---
-        pay_frame = tk.Frame(self.body)
-        pay_frame.pack(fill="x", pady=(0, 10))
-
-        tk.Label(pay_frame, text="Выберите тариф:", font=("Segoe UI", 10, "bold")).pack(side="left")
-        self.pay_plan_var = tk.StringVar()
-        self.pay_plan_combo = ttk.Combobox(
-            pay_frame, textvariable=self.pay_plan_var, state="readonly",
-            values=[], width=30, font=("Segoe UI", 10))
-        self.pay_plan_combo.pack(side="left", padx=(8, 10))
-        self.pay_plan_combo.bind("<<ComboboxSelected>>", self._on_pay_plan_selected)
-
-        self.pay_plan_price_var = tk.StringVar(value="")
-        tk.Label(pay_frame, textvariable=self.pay_plan_price_var,
-                 font=("Segoe UI", 10), fg="#6B7280").pack(side="left", padx=(6, 0))
-
-        self.pay_btn = tk.Button(
-            pay_frame, text="Оплатить через ЮKassa", command=self.open_payment,
-            bg="#374151", fg="#FFFFFF", font=("Segoo UI", 11, "bold"),
-            relief="flat", cursor="hand2", width=22, height=2,
-            state="disabled")
-        self.pay_btn.pack(side="right")
-
-        self.pay_status_var = tk.StringVar(value="")
-        tk.Label(self.body, textvariable=self.pay_status_var,
-                 font=("Segoe UI", 9), fg="#6B7280").pack(anchor="w", pady=(2, 0))
-
-        # Загружаем тарифы в фоне
-        threading.Thread(target=self._load_plans_for_payment, daemon=True).start()
-
-        sub_card = tk.Frame(self.body, bg="#F3F4F6", highlightbackground="#E5E7EB",
-                            highlightthickness=1)
-        sub_card.pack(fill="x", pady=(0, 14))
-
-        tk.Label(sub_card, text="Активная подписка", bg="#F3F4F6", fg="#14161A",
-                 font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=14, pady=(10, 6))
+        # ── карточка подписки (hero, как на сайте) ──
+        sub_card = tk.Frame(self.body, bg=T.ACCENT, highlightthickness=0, bd=0)
+        sub_card.pack(fill="x", pady=(0, 12))
+        hero_top = tk.Frame(sub_card, bg=T.ACCENT)
+        hero_top.pack(fill="x", padx=16, pady=(14, 4))
+        tk.Label(hero_top, text="Активная подписка", bg=T.ACCENT, fg="#ffffff",
+                 font=(T.FONT, 15, "bold")).pack(side="left")
+        self.sub_badge = tk.Label(hero_top, text="—", bg=T.ACCENT, fg="#ffffff",
+                                  font=(T.FONT, 9, "bold"))
+        self.sub_badge.pack(side="right")
 
         self.sub_rows = {}
         rows = [
             ("sub_plan", "Тариф:"),
-            ("sub_status", "Статус:"),
             ("sub_expires", "Действует до:"),
             ("sub_days", "Осталось дней:"),
             ("sub_traffic", "Трафик:"),
             ("sub_devices", "Устройства онлайн:"),
-            ("sub_devices_limit", "Лимит устройств по тарифу:"),
-            ("sub_updated", "Обновлено:"),
+            ("sub_devices_limit", "Лимит по тарифу:"),
         ]
         for key, label in rows:
-            row = tk.Frame(sub_card, bg="#F3F4F6")
-            row.pack(fill="x", padx=14, pady=1)
-            tk.Label(row, text=label, bg="#F3F4F6", fg="#6B7280",
-                     font=("Segoe UI", 10), width=26, anchor="w").pack(side="left")
-            val = tk.Label(row, text="—", bg="#F3F4F6", fg="#14161A",
-                           font=("Segoe UI", 10, "bold"), anchor="w")
+            row = tk.Frame(sub_card, bg=T.ACCENT)
+            row.pack(fill="x", padx=16, pady=1)
+            tk.Label(row, text=label, bg=T.ACCENT, fg="#d9d9de",
+                     font=(T.FONT, 10), width=20, anchor="w").pack(side="left")
+            val = tk.Label(row, text="—", bg=T.ACCENT, fg="#ffffff",
+                           font=(T.FONT, 10, "bold"), anchor="w")
             val.pack(side="left")
             self.sub_rows[key] = val
 
-        sub_btns = tk.Frame(sub_card, bg="#F3F4F6")
-        sub_btns.pack(anchor="e", padx=14, pady=(4, 10))
-        tk.Button(sub_btns, text="Обновить данные", command=self.refresh_subscription,
-                  bg="#2F343E", fg="#FFFFFF", relief="flat", cursor="hand2",
-                  font=("Segoe UI", 9)).pack(side="right")
+        sub_btns = tk.Frame(sub_card, bg=T.ACCENT)
+        sub_btns.pack(anchor="e", padx=16, pady=(8, 12))
+        T.ghost_button(sub_btns, text="🔄  Обновить данные",
+                       command=self.refresh_subscription, bg=T.ACCENT,
+                       fg="#ffffff", highlightbackground="#a01620",
+                       highlightcolor="#a01620",
+                       font=(T.FONT, 9)).pack(side="right")
 
-        self.status_var = tk.StringVar(value="Не подключено")
-        self.status_label = tk.Label(self.body, textvariable=self.status_var, fg="#E01E2B",
-                                     font=("Segoe UI", 11, "bold"))
-        self.status_label.pack(anchor="w")
+        # ── оплата ──
+        pay_card = T.card(self.body)
+        pay_card.pack(fill="x", pady=(0, 12))
+        tk.Label(pay_card, text="ОПЛАТА ПОДПИСКИ", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9, "bold")).pack(anchor="w", padx=16, pady=(12, 6))
+        pay_row = tk.Frame(pay_card, bg=T.CARD)
+        pay_row.pack(fill="x", padx=16, pady=(0, 10))
+        tk.Label(pay_row, text="Тариф", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 10)).pack(side="left")
+        self.pay_plan_var = tk.StringVar()
+        self.pay_plan_combo = ttk.Combobox(
+            pay_row, textvariable=self.pay_plan_var, state="readonly",
+            values=[], width=26, font=(T.FONT, 10))
+        self.pay_plan_combo.pack(side="left", padx=(10, 8))
+        self.pay_plan_combo.bind("<<ComboboxSelected>>", self._on_pay_plan_selected)
+        T.style_combobox(self.pay_plan_combo)
+        self.pay_plan_price_var = tk.StringVar(value="")
+        tk.Label(pay_row, textvariable=self.pay_plan_price_var,
+                 bg=T.CARD, fg=T.MUTED, font=(T.FONT, 10)).pack(side="left", padx=(2, 0))
+        self.pay_btn = T.accent_button(
+            pay_row, text="Оплатить через ЮKassa", command=self.open_payment,
+            font=(T.FONT, 10, "bold"), width=22, height=1, state="disabled")
+        self.pay_btn.pack(side="right")
+        self.pay_status_var = tk.StringVar(value="")
+        tk.Label(pay_card, textvariable=self.pay_status_var,
+                 bg=T.CARD, fg=T.MUTED, font=(T.FONT, 9),
+                 wraplength=620, justify="left").pack(anchor="w", padx=16, pady=(0, 12))
 
-        self.log = scrolledtext.ScrolledText(self.body, height=6, width=66,
-                                             font=("Consolas", 9), state="disabled")
-        self.log.pack(fill="x", pady=(8, 4))
+        # Загружаем тарифы в фоне
+        threading.Thread(target=self._load_plans_for_payment, daemon=True).start()
 
-        exc_frame = tk.Frame(self.body)
-        exc_frame.pack(fill="x", pady=(2, 0))
-        self.exc_btn = tk.Button(
-            exc_frame, text="Исключения из туннеля…", command=self.open_exceptions,
-            bg="#374151", fg="#FFFFFF", relief="flat", cursor="hand2",
-            font=("Segoe UI", 10), width=30)
+        # ── журнал ──
+        log_card = T.card(self.body)
+        log_card.pack(fill="x", pady=(0, 12))
+        tk.Label(log_card, text="ЖУРНАЛ", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9, "bold")).pack(anchor="w", padx=16, pady=(12, 4))
+        self.log = scrolledtext.ScrolledText(
+            log_card, height=7, width=66, font=("Consolas", 9), state="disabled",
+            bg=T.INPUT_BG, fg=T.TEXT, insertbackground=T.TEXT,
+            relief="flat", bd=0, highlightthickness=1,
+            highlightbackground=T.BORDER, highlightcolor=T.ACCENT)
+        self.log.pack(fill="x", padx=16, pady=(0, 14))
+
+        # ── исключения + внешние ссылки ──
+        bottom = tk.Frame(self.body, bg=T.BG)
+        bottom.pack(fill="x")
+        self.exc_btn = T.ghost_button(
+            bottom, text="🚫  Исключения из туннеля…", command=self.open_exceptions,
+            width=26, height=1)
         self.exc_btn.pack(side="left")
         self.exc_info_var = tk.StringVar(value="Исключения: не загружены")
-        tk.Label(exc_frame, textvariable=self.exc_info_var, fg="#6B7280",
-                 font=("Segoe UI", 9)).pack(side="left", padx=10)
+        tk.Label(bottom, textvariable=self.exc_info_var, bg=T.BG, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(side="left", padx=10)
 
-        links = tk.Frame(self.root)
-        links.pack(fill="x", pady=(0, 10))
-        tk.Button(links, text="Открыть сайт K.O. Gateway",
-                  command=lambda: webbrowser.open("https://auth.ko-gateway.ru"),
-                  bg="#2F343E", fg="#FFFFFF", relief="flat", cursor="hand2",
-                  width=24).pack(side="left", padx=8)
-        tk.Button(links, text="Открыть бота в Telegram",
-                  command=lambda: webbrowser.open("https://t.me/KO_Gateway_bot"),
-                  bg="#2F343E", fg="#FFFFFF", relief="flat", cursor="hand2",
-                  width=24).pack(side="right", padx=8)
+        links = tk.Frame(self.body, bg=T.BG)
+        links.pack(fill="x", pady=(10, 0))
+        T.ghost_button(links, text="Открыть сайт K.O. Gateway",
+                       command=lambda: webbrowser.open("https://auth.ko-gateway.ru"),
+                       width=24, height=1).pack(side="left")
+        T.ghost_button(links, text="Открыть бота в Telegram",
+                       command=lambda: webbrowser.open("https://t.me/KO_Gateway_bot"),
+                       width=24, height=1).pack(side="right")
 
     def _select_profile(self, profile_id: str):
         for p in self.profiles:
@@ -921,11 +1054,14 @@ class GatewayApp:
                 self.server_var.set(p.get("default_server", ""))
                 self.link_var.set(p.get("default_ports", ""))
                 self.desc_var.set(p.get("description", ""))
-                self.of_transport_var.set(p.get("transport", "yandex"))
-                self.of_url_var.set(p.get("url", ""))
-                self.of_secret_var.set(p.get("secret", ""))
-                self.of_inbound_var.set(p.get("inbound", "socks5"))
-                self.of_codec_var.set(p.get("codec", "batched"))
+                # поля OpenFlux живут только на вкладке Настроек —
+                # обновляем их, если эта вкладка уже построена
+                if hasattr(self, "of_transport_var"):
+                    self.of_transport_var.set(p.get("transport", "yandex"))
+                    self.of_url_var.set(p.get("url", ""))
+                    self.of_secret_var.set(p.get("secret", ""))
+                    self.of_inbound_var.set(p.get("inbound", "socks5"))
+                    self.of_codec_var.set(p.get("codec", "batched"))
                 self.root.title(f"K.O. Gateway — {p['name']}")
                 self._log(f"Профиль выбран: {p['name']}")
                 break
@@ -939,36 +1075,52 @@ class GatewayApp:
 
     def _log(self, text: str):
         def append():
-            self.log.config(state="normal")
-            self.log.insert("end", text + "\n")
-            self.log.see("end")
-            self.log.config(state="disabled")
+            # Журнал живёт только на главном экране: при переключении
+            # на «Настройки» он удалён, и обращение к нему падало бы.
+            log = getattr(self, "log", None)
+            if log is None or not log.winfo_exists():
+                return
+            try:
+                log.config(state="normal")
+                log.insert("end", text + "\n")
+                log.see("end")
+                log.config(state="disabled")
+            except tk.TclError:
+                pass
         self.root.after(0, append)
 
     def _refresh_sub_card(self):
         d = self.sub.data
         active = bool(d.get("active"))
         self.sub_rows["sub_plan"].config(text=d.get("plan_name", "—"))
-        self.sub_rows["sub_status"].config(
-            text="Активна" if active else "Неактивна",
-            fg="#22C55E" if active else "#EF4444")
+        self.sub_badge.config(
+            text="● АКТИВНА" if active else "○ НЕАКТИВНА",
+            fg="#d7ffe4" if active else "#ffd7da")
         self.sub_rows["sub_expires"].config(text=d.get("expires_at", "—"))
         self.sub_rows["sub_days"].config(text=d.get("days_left", "—"))
         self.sub_rows["sub_traffic"].config(
-            text=f"{d.get('traffic_used', '—')} / {d.get('traffic_limit', '—')}"
-        )
+            text=f"{d.get('traffic_used', '—')} / {d.get('traffic_limit', '—')}")
         self.sub_rows["sub_devices"].config(
-            text=f"{d.get('devices_online', 0)} устройств подключено"
-        )
+            text=f"{d.get('devices_online', 0)} подключено")
         self.sub_rows["sub_devices_limit"].config(
-            text=f"{d.get('devices_max', 1)} устройств по тарифу"
-        )
-        self.sub_rows["sub_updated"].config(text=d.get("updated_at") or "—")
+            text=f"{d.get('devices_max', 1)} доступно")
+        if hasattr(self, "header_status"):
+            self.header_status.config(
+                text=f"Обновлено: {d.get('updated_at')}" if d.get("updated_at") else "")
+
+    def _api_token(self) -> str:
+        """Токен для API: явный api_token, иначе токен входа (auth_token).
+
+        После входа приложение хранит токен в auth_token; api_token в конфиге
+        остаётся пустым, и запросы /api/v1/me и /api/v1/create-payment
+        уходили без авторизации (401).
+        """
+        return self.config.get("api_token") or self.config.get("auth_token") or ""
 
     def refresh_subscription(self):
         self._log("Загрузка данных подписки…")
         api_url = self.config.get("api_url", "")
-        token = self.config.get("api_token", "")
+        token = self._api_token()
 
         def worker():
             ok = self.sub.fetch_from_api(api_url, token)
@@ -1225,7 +1377,8 @@ class GatewayApp:
             with urllib.request.urlopen(req, timeout=10) as r:
                 data = json.loads(r.read().decode("utf-8", "replace"))
         except Exception as e:
-            self.root.after(0, lambda: self.pay_status_var.set(f"Не удалось загрузить тарифы: {e}"))
+            err = str(e)
+            self.root.after(0, lambda: self.pay_status_var.set(f"Не удалось загрузить тарифы: {err}"))
             return
         plans = data.get("plans", [])
         self.pay_plans = plans
@@ -1257,7 +1410,7 @@ class GatewayApp:
         plan = self.pay_plans[idx]
         plan_id = str(plan.get("id", ""))
         api_url = self.config.get("api_url", "").rstrip("/")
-        token = self.config.get("api_token", "")
+        token = self._api_token()
         if not api_url:
             self.pay_status_var.set("API URL не настроен")
             return
@@ -1341,157 +1494,202 @@ class GatewayApp:
 
 
     def _build_settings_view(self):
-        pad = {"padx": 18, "pady": 10}
-
-        tk.Label(self.body, text="⚙️ Настройки подключения",
-                 font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(0, 10))
+        # ── заголовок ──
+        tk.Label(self.body, text="Настройки подключения", bg=T.BG, fg=T.TEXT,
+                 font=(T.FONT, 17, "bold"), anchor="w").pack(anchor="w", pady=(0, 4))
+        tk.Label(self.body, text="Ссылки подключения загружаются автоматически по вашему аккаунту",
+                 bg=T.BG, fg=T.MUTED, font=(T.FONT, 9), anchor="w").pack(anchor="w", pady=(0, 14))
 
         # --- профиль (ссылки загружаются автоматически по аккаунту, ввод не требуется) ---
-        prof_frame = tk.Frame(self.body)
-        prof_frame.pack(fill="x", pady=(0, 8))
-        tk.Label(prof_frame, text="Профиль:", font=("Segoe UI", 10, "bold")).pack(side="left")
+        prof_card = T.card(self.body)
+        prof_card.pack(fill="x", pady=(0, 12))
+        tk.Label(prof_card, text="ПРОФИЛЬ", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9, "bold")).pack(anchor="w", padx=16, pady=(12, 6))
+        prof_frame = tk.Frame(prof_card, bg=T.CARD)
+        prof_frame.pack(fill="x", padx=16, pady=(0, 12))
+        tk.Label(prof_frame, text="Профиль", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 10)).pack(side="left")
         self.settings_profile_var = tk.StringVar()
         self.settings_profile_combo = ttk.Combobox(
             prof_frame, textvariable=self.settings_profile_var, state="readonly",
-            values=[p["name"] for p in self.profiles], width=26
+            values=[p["name"] for p in self.profiles], width=26, font=(T.FONT, 10)
         )
-        self.settings_profile_combo.pack(side="left", padx=(8, 0))
+        self.settings_profile_combo.pack(side="left", padx=(10, 8))
         self.settings_profile_combo.bind("<<ComboboxSelected>>", self._on_settings_profile_changed)
+        T.style_combobox(self.settings_profile_combo)
 
         self.settings_desc_var = tk.StringVar(value="")
-        tk.Label(self.body, textvariable=self.settings_desc_var, fg="#6B7280",
-                 font=("Segoe UI", 9), wraplength=640, justify="left").pack(anchor="w", pady=(4, 8))
+        tk.Label(prof_card, textvariable=self.settings_desc_var, bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9), wraplength=620, justify="left",
+                 anchor="w").pack(fill="x", padx=16, pady=(0, 12))
 
         # --- OpenFlux профиль ---
-        of_frame = tk.LabelFrame(self.body, text="⚡ OpenFlux (p1neappleXpress/OpenFlux)",
-                                 font=("Segoe UI", 10, "bold"), fg="#7C3AED")
-        of_frame.pack(fill="x", pady=(0, 8))
+        of_card = T.card(self.body)
+        of_card.pack(fill="x", pady=(0, 12))
+        tk.Label(of_card, text="🌀 OPENFLUX", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9, "bold")).pack(anchor="w", padx=16, pady=(12, 6))
 
-        of_row1 = tk.Frame(of_frame)
-        of_row1.pack(fill="x", padx=8, pady=(4, 2))
-        tk.Label(of_row1, text="Транспорт:", font=("Segoe UI", 9)).pack(side="left")
+        of_row1 = tk.Frame(of_card, bg=T.CARD)
+        of_row1.pack(fill="x", padx=16, pady=(0, 6))
+        tk.Label(of_row1, text="Транспорт", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(side="left")
         self.of_transport_var = tk.StringVar(value="yandex")
         of_transport_combo = ttk.Combobox(of_row1, textvariable=self.of_transport_var, state="readonly",
                                           values=["yandex", "vyandex", "mailru", "cupsonline", "avito", "direct"],
-                                          width=14, font=("Segoe UI", 9))
-        of_transport_combo.pack(side="left", padx=(6, 12))
+                                          width=14, font=(T.FONT, 9))
+        of_transport_combo.pack(side="left", padx=(8, 16))
+        T.style_combobox(of_transport_combo)
 
-        tk.Label(of_row1, text="Inbound:", font=("Segoe UI", 9)).pack(side="left")
+        tk.Label(of_row1, text="Inbound", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(side="left")
         self.of_inbound_var = tk.StringVar(value="socks5")
         of_inbound_combo = ttk.Combobox(of_row1, textvariable=self.of_inbound_var, state="readonly",
-                                        values=["socks5", "tun"], width=10, font=("Segoe UI", 9))
-        of_inbound_combo.pack(side="left", padx=(6, 12))
+                                        values=["socks5", "tun"], width=10, font=(T.FONT, 9))
+        of_inbound_combo.pack(side="left", padx=(8, 16))
+        T.style_combobox(of_inbound_combo)
 
-        tk.Label(of_row1, text="Кодек:", font=("Segoe UI", 9)).pack(side="left")
+        tk.Label(of_row1, text="Кодек", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(side="left")
         self.of_codec_var = tk.StringVar(value="batched")
         of_codec_combo = ttk.Combobox(of_row1, textvariable=self.of_codec_var, state="readonly",
-                                      values=["batched", "legacy"], width=10, font=("Segoe UI", 9))
-        of_codec_combo.pack(side="left", padx=(6, 0))
+                                      values=["batched", "legacy"], width=10, font=(T.FONT, 9))
+        of_codec_combo.pack(side="left", padx=(8, 0))
+        T.style_combobox(of_codec_combo)
 
-        of_row2 = tk.Frame(of_frame)
-        of_row2.pack(fill="x", padx=8, pady=(2, 4))
-        tk.Label(of_row2, text="URL документа:", font=("Segoe UI", 9)).pack(side="left")
+        of_row2 = tk.Frame(of_card, bg=T.CARD)
+        of_row2.pack(fill="x", padx=16, pady=(4, 6))
+        tk.Label(of_row2, text="URL документа", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(side="left")
         self.of_url_var = tk.StringVar(value="")
-        tk.Entry(of_row2, textvariable=self.of_url_var, width=52, font=("Segoe UI", 9)).pack(side="left", padx=(6, 6), fill="x", expand=True)
+        T.dark_entry(of_row2, textvariable=self.of_url_var, width=48,
+                     font=(T.FONT, 9)).pack(side="left", padx=(8, 6), fill="x", expand=True)
 
-        of_row3 = tk.Frame(of_frame)
-        of_row3.pack(fill="x", padx=8, pady=(2, 6))
-        tk.Label(of_row3, text="Секрет шифрования:", font=("Segoe UI", 9)).pack(side="left")
+        of_row3 = tk.Frame(of_card, bg=T.CARD)
+        of_row3.pack(fill="x", padx=16, pady=(4, 12))
+        tk.Label(of_row3, text="Секрет шифрования", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(side="left")
         self.of_secret_var = tk.StringVar(value="")
-        tk.Entry(of_row3, textvariable=self.of_secret_var, width=34, font=("Segoe UI", 9), show="*").pack(side="left", padx=(6, 6))
-        tk.Label(of_row3, text="(AES-256-GCM, для сессий и --transports)", font=("Segoe UI", 8), fg="#6B7280").pack(side="left", padx=(6, 0))
+        T.dark_entry(of_row3, textvariable=self.of_secret_var, width=32,
+                     font=(T.FONT, 9), show="*").pack(side="left", padx=(8, 6))
+        tk.Label(of_row3, text="AES-256-GCM, для сессий и --transports", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 8)).pack(side="left", padx=(2, 0))
 
         # --- API сайта ---
-        api_frame = tk.Frame(self.body)
-        api_frame.pack(fill="x", pady=(0, 8))
-        tk.Label(api_frame, text="API сайта:", font=("Segoe UI", 10, "bold")).pack(side="left")
+        api_card = T.card(self.body)
+        api_card.pack(fill="x", pady=(0, 12))
+        tk.Label(api_card, text="API САЙТА", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9, "bold")).pack(anchor="w", padx=16, pady=(12, 6))
+        api_frame = tk.Frame(api_card, bg=T.CARD)
+        api_frame.pack(fill="x", padx=16, pady=(0, 12))
+        tk.Label(api_frame, text="URL", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 10)).pack(side="left")
         self.api_url_var = tk.StringVar(value=self.config.get("api_url", ""))
-        tk.Entry(api_frame, textvariable=self.api_url_var, width=34, font=("Segoe UI", 10)).pack(side="left", padx=(8, 6))
+        T.dark_entry(api_frame, textvariable=self.api_url_var, width=30,
+                     font=(T.FONT, 10)).pack(side="left", padx=(8, 6))
+        tk.Label(api_frame, text="Токен", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 10)).pack(side="left", padx=(8, 6))
         self.api_token_var = tk.StringVar(value=self.config.get("api_token", ""))
-        tk.Entry(api_frame, textvariable=self.api_token_var, width=26, font=("Segoe UI", 10), show="*").pack(side="left")
+        T.dark_entry(api_frame, textvariable=self.api_token_var, width=24,
+                     font=(T.FONT, 10), show="*").pack(side="left")
 
         # --- Прямое подключение (мимо VPN) ---
-        d_frame = tk.LabelFrame(self.body, text="🚫 Прямое подключение (мимо VPN)",
-                                 font=("Segoe UI", 10, "bold"), fg="#EF4444")
-        d_frame.pack(fill="x", pady=(0, 8))
+        d_card = T.card(self.body)
+        d_card.pack(fill="x", pady=(0, 12))
+        tk.Label(d_card, text="🚫 ПРЯМОЕ ПОДКЛЮЧЕНИЕ (МИМО VPN)", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9, "bold")).pack(anchor="w", padx=16, pady=(12, 6))
         self.d_enabled_var = tk.BooleanVar(value=self.drm.is_direct_enabled())
-        tk.Checkbutton(d_frame, text="Включить раздельное туннелирование (прямое подключение)",
-                       variable=self.d_enabled_var, command=self._toggle_direct,
-                       font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=8, pady=(4, 6))
+        T.style_checkbox(tk.Checkbutton(
+            d_card, text="Включить раздельное туннелирование (прямое подключение)",
+            variable=self.d_enabled_var, command=self._toggle_direct,
+            font=(T.FONT, 10, "bold"))).pack(anchor="w", padx=16)
         self.d_info_var = tk.StringVar(value="")
-        tk.Label(d_frame, textvariable=self.d_info_var, fg="#6B7280", font=("Segoe UI", 9)).pack(anchor="w", padx=8, pady=(0, 4))
-        d_btn_frame = tk.Frame(d_frame)
-        d_btn_frame.pack(anchor="e", padx=8, pady=(0, 6))
-        tk.Button(d_btn_frame, text="Настроить список…", command=self.open_exceptions,
-                  bg="#374151", fg="#FFFFFF", relief="flat", cursor="hand2",
-                  font=("Segoe UI", 9)).pack(side="right")
+        tk.Label(d_card, textvariable=self.d_info_var, bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(anchor="w", padx=16, pady=(2, 8))
+        d_btn_frame = tk.Frame(d_card, bg=T.CARD)
+        d_btn_frame.pack(anchor="e", padx=16, pady=(0, 12))
+        T.ghost_button(d_btn_frame, text="Настроить список…", command=self.open_exceptions,
+                       font=(T.FONT, 9)).pack(side="right")
 
         # --- Через туннель VPN ---
-        t_frame = tk.LabelFrame(self.body, text="🔒 Через туннель VPN (принудительно)",
-                                 font=("Segoe UI", 10, "bold"), fg="#22C55E")
-        t_frame.pack(fill="x", pady=(0, 8))
+        t_card = T.card(self.body)
+        t_card.pack(fill="x", pady=(0, 12))
+        tk.Label(t_card, text="🔒 ЧЕРЕЗ ТУННЕЛЬ VPN (ПРИНУДИТЕЛЬНО)", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9, "bold")).pack(anchor="w", padx=16, pady=(12, 6))
         self.t_enabled_var = tk.BooleanVar(value=self.drm.is_tunnel_enabled())
-        tk.Checkbutton(t_frame, text="Принудительно пускать через туннель",
-                       variable=self.t_enabled_var, command=self._toggle_tunnel,
-                       font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=8, pady=(4, 6))
+        T.style_checkbox(tk.Checkbutton(
+            t_card, text="Принудительно пускать через туннель",
+            variable=self.t_enabled_var, command=self._toggle_tunnel,
+            font=(T.FONT, 10, "bold"))).pack(anchor="w", padx=16)
         self.t_info_var = tk.StringVar(value="")
-        tk.Label(t_frame, textvariable=self.t_info_var, fg="#6B7280", font=("Segoe UI", 9)).pack(anchor="w", padx=8, pady=(0, 4))
-        t_btn_frame = tk.Frame(t_frame)
-        t_btn_frame.pack(anchor="e", padx=8, pady=(0, 6))
-        tk.Button(t_btn_frame, text="Настроить список…", command=self.open_tunnel_exceptions,
-                  bg="#374151", fg="#FFFFFF", relief="flat", cursor="hand2",
-                  font=("Segoe UI", 9)).pack(side="right")
+        tk.Label(t_card, textvariable=self.t_info_var, bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(anchor="w", padx=16, pady=(2, 8))
+        t_btn_frame = tk.Frame(t_card, bg=T.CARD)
+        t_btn_frame.pack(anchor="e", padx=16, pady=(0, 12))
+        T.ghost_button(t_btn_frame, text="Настроить список…", command=self.open_tunnel_exceptions,
+                       font=(T.FONT, 9)).pack(side="right")
 
         # --- Автообнаружение медленных сайтов ---
-        speed_frame = tk.LabelFrame(self.body, text="📉 Автообнаружение медленных сайтов через туннель",
-                                    font=("Segoe UI", 10, "bold"), fg="#EF4444")
-        speed_frame.pack(fill="x", pady=(0, 8))
+        speed_card = T.card(self.body)
+        speed_card.pack(fill="x", pady=(0, 12))
+        tk.Label(speed_card, text="📉 АВТООБНАРУЖЕНИЕ МЕДЛЕННЫХ САЙТОВ", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9, "bold")).pack(anchor="w", padx=16, pady=(12, 6))
 
-        speed_row1 = tk.Frame(speed_frame)
-        speed_row1.pack(fill="x", padx=8, pady=(4, 2))
-        tk.Label(speed_row1, text="Порог медленности (мс):", font=("Segoe UI", 9)).pack(side="left")
+        speed_row1 = tk.Frame(speed_card, bg=T.CARD)
+        speed_row1.pack(fill="x", padx=16, pady=(0, 8))
+        tk.Label(speed_row1, text="Порог медленности (мс)", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(side="left")
         self.speed_threshold_var = tk.StringVar(value=str(self.speed.cfg.get("threshold_ms", 3000)))
-        tk.Entry(speed_row1, textvariable=self.speed_threshold_var, width=8, font=("Segoe UI", 9)).pack(side="left", padx=(6, 12))
-        tk.Button(speed_row1, text="Проверить скорость сейчас", command=self.check_tunnel_speed,
-                  bg="#2F343E", fg="#FFFFFF", relief="flat", cursor="hand2",
-                  font=("Segoe UI", 9)).pack(side="left")
+        T.dark_entry(speed_row1, textvariable=self.speed_threshold_var, width=8,
+                     font=(T.FONT, 9)).pack(side="left", padx=(8, 12))
+        T.ghost_button(speed_row1, text="Проверить скорость сейчас", command=self.check_tunnel_speed,
+                       font=(T.FONT, 9)).pack(side="left")
         self.speed_info_var = tk.StringVar(value="Проверок ещё не было")
-        tk.Label(speed_row1, textvariable=self.speed_info_var, fg="#6B7280", font=("Segoe UI", 9)).pack(side="left", padx=(12, 0))
+        tk.Label(speed_row1, textvariable=self.speed_info_var, bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(side="left", padx=(12, 0))
 
-        speed_row2 = tk.Frame(speed_frame)
-        speed_row2.pack(fill="x", padx=8, pady=(2, 6))
-        tk.Label(speed_row2, text="Медленные сайты:", font=("Segoe UI", 9, "bold")).pack(side="left", anchor="w")
-        self.speed_list = tk.Listbox(speed_row2, font=("Consolas", 9), height=4)
-        self.speed_list.pack(side="left", fill="x", expand=True, padx=(6, 6), pady=(2, 2))
-        tk.Button(speed_row2, text="Перенести в прямое подключение", command=self.promote_selected_slow,
-                  bg="#EF4444", fg="#FFFFFF", relief="flat", cursor="hand2",
-                  font=("Segoe UI", 9)).pack(side="left", padx=(0, 6))
+        speed_row2 = tk.Frame(speed_card, bg=T.CARD)
+        speed_row2.pack(fill="x", padx=16, pady=(0, 12))
+        tk.Label(speed_row2, text="Медленные сайты", bg=T.CARD, fg=T.TEXT,
+                 font=(T.FONT, 9, "bold")).pack(side="left", anchor="w")
+        self.speed_list = tk.Listbox(speed_row2, font=("Consolas", 9), height=4,
+                                     bg=T.INPUT_BG, fg=T.TEXT, selectbackground=T.ACCENT,
+                                     selectforeground="#ffffff", relief="flat", bd=0,
+                                     highlightthickness=1, highlightbackground=T.BORDER,
+                                     highlightcolor=T.ACCENT)
+        self.speed_list.pack(side="left", fill="x", expand=True, padx=(8, 6), pady=(2, 2))
+        T.ghost_button(speed_row2, text="Перенести в прямое подключение",
+                       command=self.promote_selected_slow, font=(T.FONT, 9)).pack(side="left", padx=(0, 6))
 
         # --- Авто-переключение протоколов ---
-        ff_frame = tk.LabelFrame(self.body, text="🔄 Авто-переключение при медленном соединении",
-                                 font=("Segoe UI", 10, "bold"), fg="#E01E2B")
-        ff_frame.pack(fill="x", pady=(0, 8))
+        ff_card = T.card(self.body)
+        ff_card.pack(fill="x", pady=(0, 12))
+        tk.Label(ff_card, text="🔄 АВТО-ПЕРЕКЛЮЧЕНИЕ ПРИ МЕДЛЕННОМ СОЕДИНЕНИИ",
+                 bg=T.CARD, fg=T.MUTED, font=(T.FONT, 9, "bold")).pack(anchor="w", padx=16, pady=(12, 6))
 
-        ff_row1 = tk.Frame(ff_frame)
-        ff_row1.pack(fill="x", padx=8, pady=(4, 2))
+        ff_row1 = tk.Frame(ff_card, bg=T.CARD)
+        ff_row1.pack(fill="x", padx=16, pady=(0, 6))
         self.ff_enabled_var = tk.BooleanVar(value=self.config.get("connection_failover", {}).get("enabled", True))
-        tk.Checkbutton(ff_row1, text="Включить авто-переключение (AIVPN → WDTT)",
-                       variable=self.ff_enabled_var, command=self._toggle_ff_enabled,
-                       font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        T.style_checkbox(tk.Checkbutton(
+            ff_row1, text="Включить авто-переключение (AIVPN → WDTT → OpenFlux)",
+            variable=self.ff_enabled_var, command=self._toggle_ff_enabled,
+            font=(T.FONT, 10, "bold"))).pack(anchor="w")
         self.ff_info_var = tk.StringVar(value="")
-        tk.Label(ff_row1, textvariable=self.ff_info_var, fg="#6B7280", font=("Segoe UI", 9)).pack(side="left", padx=(12, 0))
+        tk.Label(ff_row1, textvariable=self.ff_info_var, bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(side="left", padx=(12, 0))
 
-        ff_row2 = tk.Frame(ff_frame)
-        ff_row2.pack(fill="x", padx=8, pady=(2, 6))
-        tk.Label(ff_row2, text="Порог медленности (мс):", font=("Segoe UI", 9)).pack(side="left")
+        ff_row2 = tk.Frame(ff_card, bg=T.CARD)
+        ff_row2.pack(fill="x", padx=16, pady=(0, 12))
+        tk.Label(ff_row2, text="Порог медленности (мс)", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9)).pack(side="left")
         self.ff_threshold_var = tk.StringVar(value=str(self.config.get("connection_failover", {}).get("slow_threshold_ms", 3000)))
-        tk.Entry(ff_row2, textvariable=self.ff_threshold_var, width=8, font=("Segoe UI", 9)).pack(side="left", padx=(6, 12))
+        T.dark_entry(ff_row2, textvariable=self.ff_threshold_var, width=8,
+                     font=(T.FONT, 9)).pack(side="left", padx=(8, 12))
         self.ff_order_var = tk.StringVar(value="")
-        self.ff_order_label = tk.Label(ff_row2, textvariable=self.ff_order_var, font=("Segoe UI", 9), fg="#6B7280")
+        self.ff_order_label = tk.Label(ff_row2, textvariable=self.ff_order_var,
+                                       bg=T.CARD, fg=T.MUTED, font=(T.FONT, 9))
         self.ff_order_label.pack(side="left", padx=(12, 0))
 
         self._refresh_settings()
-
     def _refresh_settings(self):
         if self.current_profile:
             self.settings_profile_var.set(self.current_profile["name"])
@@ -1543,6 +1741,13 @@ class GatewayApp:
         self.drm.tcfg["enabled"] = bool(self.t_enabled_var.get())
         self._save_config()
         self._refresh_exc_info()
+
+    def _toggle_ff_enabled(self):
+        """Включает/выключает авто-переключение протоколов."""
+        ff = self.config.setdefault("connection_failover", {})
+        ff["enabled"] = bool(self.ff_enabled_var.get())
+        self._save_config()
+        self.refresh_speed_info()
 
     def check_tunnel_speed(self):
         self._log("Проверка скорости подключения к сайтам через туннель…")
