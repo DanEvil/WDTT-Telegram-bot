@@ -38,6 +38,13 @@ except ImportError:  # запуск из другой директории
     _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import bypass as BP
 
+try:
+    import conn_analytics as CA
+except ImportError:  # запуск из другой директории
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import conn_analytics as CA
+
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 SUB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subscription.json")
 SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session.json")
@@ -652,6 +659,7 @@ class GatewayApp:
         self.connected = False
         self.connect_thread = None
         self.drm = DirectRoutesManager(self.config)
+        self.conn_analyzer = CA.ConnectionAnalyzer(self.drm)
         self.speed = SpeedDetector(self.config, self.drm)
         self.sub = Subscription(SUB_PATH)
         self.current_view = "main"
@@ -1678,6 +1686,48 @@ class GatewayApp:
         T.ghost_button(speed_row2, text="Перенести в прямое подключение",
                        command=self.promote_selected_slow, font=(T.FONT, 9)).pack(side="left", padx=(0, 6))
 
+        # --- Аналитика типа соединений ---
+        conn_card = T.card(self.body)
+        conn_card.pack(fill="x", pady=(0, 12))
+        tk.Label(conn_card, text="🔀 АНАЛИТИКА ТИПА СОЕДИНЕНИЙ", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9, "bold")).pack(anchor="w", padx=16, pady=(12, 6))
+
+        conn_row0 = tk.Frame(conn_card, bg=T.CARD)
+        conn_row0.pack(fill="x", padx=16, pady=(0, 8))
+        self.conn_info_var = tk.StringVar(value="Обновляется…")
+        tk.Label(conn_row0, textvariable=self.conn_info_var, bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9), anchor="w").pack(side="left", fill="x", expand=True)
+        T.ghost_button(conn_row0, text="Обновить", command=self.refresh_conn_analytics,
+                       font=(T.FONT, 9), width=10, height=1).pack(side="right")
+
+        conn_head = tk.Frame(conn_card, bg=T.CARD)
+        conn_head.pack(fill="x", padx=16, pady=(0, 2))
+        tk.Label(conn_head, text="Домен", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9, "bold"), width=42, anchor="w").pack(side="left")
+        tk.Label(conn_head, text="Тип соединения", bg=T.CARD, fg=T.MUTED,
+                 font=(T.FONT, 9, "bold"), width=16, anchor="w").pack(side="left")
+
+        self.conn_list = tk.Listbox(conn_card, font=("Consolas", 9), height=7,
+                                    bg=T.INPUT_BG, fg=T.TEXT, selectbackground=T.ACCENT,
+                                    selectforeground="#ffffff", relief="flat", bd=0,
+                                    highlightthickness=1, highlightbackground=T.BORDER,
+                                    highlightcolor=T.ACCENT, activestyle="none")
+        self.conn_list.pack(fill="x", padx=16, pady=(2, 8))
+        self.conn_rows = []
+
+        conn_row2 = tk.Frame(conn_card, bg=T.CARD)
+        conn_row2.pack(fill="x", padx=16, pady=(0, 12))
+        self.conn_sel_var = tk.StringVar(value="Домен не выбран")
+        tk.Label(conn_row2, textvariable=self.conn_sel_var, bg=T.CARD, fg=T.TEXT,
+                 font=(T.FONT, 9), anchor="w").pack(side="left", fill="x", expand=True)
+        for kind, title in (("zapret", "Zapret"), ("direct", "Прямое"),
+                            ("tunnel", "Туннель"), ("vpn", "Обычный VPN")):
+            T.ghost_button(conn_row2, text=title,
+                           command=lambda k=kind: self._set_conn_type(k),
+                           font=(T.FONT, 9), width=11, height=1).pack(side="left", padx=(4, 0))
+        self.conn_list.bind("<<ListboxSelect>>", self._on_conn_select)
+        self.conn_selected = None
+
         # --- Обход блокировок и замедлений ---
         blk_card = T.card(self.body)
         blk_card.pack(fill="x", pady=(0, 12))
@@ -1775,6 +1825,8 @@ class GatewayApp:
         ta = len(self.drm.tcfg.get("apps", []))
         self.t_info_var.set(f"{td} доменов · {ti} IP · {ta} приложений")
         self.refresh_speed_info()
+        if hasattr(self, "conn_list"):
+            self.root.after(300, self.refresh_conn_analytics)
         ff = self.config.get("connection_failover", {})
         en = "вкл." if ff.get("enabled", True) else "выкл."
         order = " → ".join(ff.get("order", ["aivpn", "wdtt"])).upper()
@@ -1808,6 +1860,75 @@ class GatewayApp:
         self.drm.tcfg["enabled"] = bool(self.t_enabled_var.get())
         self._save_config()
         self._refresh_exc_info()
+
+    def refresh_conn_analytics(self):
+        """Пересчитывает аналитику типа соединений по всем известным доменам."""
+        if CA is None:
+            return
+
+        def worker():
+            blocked = []
+            try:
+                slow = self.speed.slow_sites()
+                blocked = [s.get("url", "") for s in slow]
+            except Exception:
+                pass
+            domains = self.conn_analyzer.all_known_domains()
+            summary = self.conn_analyzer.summary(domains, blocked=blocked)
+            self.root.after(0, lambda: self._show_conn_analytics(summary))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_conn_analytics(self, summary: dict):
+        """Показывает сводку типов соединений."""
+        if not hasattr(self, "conn_list"):
+            return
+        self.conn_list.delete(0, "end")
+        self.conn_rows = []
+        for row in summary.get("rows", []):
+            self.conn_list.insert("end", f"{row['domain']:<42} {row['label']}")
+            self.conn_rows.append(row)
+
+        counts = summary.get("counts", {})
+        z = summary.get("zapret", {})
+        parts = []
+        for kind in CA.TYPE_ORDER:
+            n = counts.get(kind, 0)
+            if n:
+                parts.append(f"{CA.TYPE_LABELS[kind]}: {n}")
+        ztext = "zapret2 не установлен"
+        if z.get("installed"):
+            ztext = (f"zapret2 установлен, "
+                     f"{'работает' if z.get('running') else 'не запущен'}, "
+                     f"доменов в списке: {z.get('hosts_count', 0)}")
+        self.conn_info_var.set(" · ".join(parts) + " · " + ztext)
+        self._log(f"Аналитика типа соединений: {' · '.join(parts) or 'нет данных'}; {ztext}")
+
+    def _on_conn_select(self, _event=None):
+        """Показывает выбранный домен и его текущий тип."""
+        sel = self.conn_list.curselection() if hasattr(self, "conn_list") else ()
+        if not sel:
+            self.conn_sel_var.set("Домен не выбран")
+            self.conn_selected = None
+            return
+        idx = sel[0]
+        if idx >= len(self.conn_rows):
+            return
+        row = self.conn_rows[idx]
+        self.conn_selected = row["domain"]
+        self.conn_sel_var.set(f"{row['domain']} — сейчас: {row['label']}")
+
+    def _set_conn_type(self, kind: str):
+        """Назначает выбранному домену тип соединения."""
+        domain = getattr(self, "conn_selected", None)
+        if not domain:
+            self.conn_sel_var.set("Сначала выберите домен в списке")
+            return
+        ok, msg = self.conn_analyzer.set_type(domain, kind)
+        self.conn_sel_var.set(msg)
+        self._log(msg)
+        if ok:
+            self.refresh_conn_analytics()
 
     def _open_block_catalog(self):
         """Показывает репозиторий запрета: каталог техник блокировки."""

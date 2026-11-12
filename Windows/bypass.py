@@ -111,6 +111,55 @@ def zapret_remove_host(domain: str) -> tuple[bool, str]:
         return False, f"Не удалось изменить список: {e}"
 
 
+def normalize_domain(domain: str) -> str:
+    """Приводит домен к виду без схемы, пути и порта."""
+    domain = (domain or "").strip().lower()
+    if "://" in domain:
+        domain = domain.split("://", 1)[1]
+    domain = domain.split("/", 1)[0].split(":", 1)[0]
+    return domain
+
+
+def domain_in_list(domain: str, hosts: list[str]) -> bool:
+    """Домен или его родительский домен есть в списке.
+
+    Шаблон "example.com" покрывает "www.example.com" и "a.b.example.com";
+    шаблон "*.example.com" покрывает поддомены, но не сам example.com.
+    """
+    domain = normalize_domain(domain)
+    if not domain:
+        return False
+    for raw in (hosts or []):
+        pat = normalize_domain(raw)
+        if not pat:
+            continue
+        if pat.startswith("*."):
+            base = pat[2:]
+            if domain == base or domain.endswith("." + base):
+                return True
+        elif domain == pat or domain.endswith("." + pat):
+            return True
+    return False
+
+
+def zapret_covers(domain: str) -> bool:
+    """Домен обслуживается zapret — он есть в myhostlist.txt."""
+    if not zapret_installed():
+        return False
+    return domain_in_list(domain, zapret_hosts())
+
+
+def zapret_state() -> dict:
+    """Состояние zapret2: установлен, работает, сколько доменов в списке."""
+    hosts = zapret_hosts() if zapret_installed() else []
+    return {
+        "installed": zapret_installed(),
+        "running": zapret_running(),
+        "hosts_count": len(hosts),
+        "hosts": hosts,
+    }
+
+
 def zapret_hosts() -> list[str]:
     """Текущий список доменов zapret2."""
     if not zapret_installed() or not os.path.isfile(ZAPRET_HOSTLIST):
@@ -172,8 +221,11 @@ def zapret_restart() -> tuple[bool, str]:
     except Exception:
         pass
 
-    # 2) GUI — она сама поднимает winws с настройками пользователя
+    # 2) GUI — она сама поднимает winws с настройками пользователя.
+    #    GUI требует повышения прав, поэтому запускаем через UAC.
     if os.path.isfile(ZAPRET_GUI):
+        if _elevate(ZAPRET_GUI, cwd=os.path.dirname(ZAPRET_GUI)):
+            return True, "zapret2 GUI запущен с повышенными правами — проверьте, что обход включён"
         try:
             subprocess.Popen([ZAPRET_GUI], cwd=os.path.dirname(ZAPRET_GUI),
                              creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
@@ -194,6 +246,27 @@ def zapret_restart() -> tuple[bool, str]:
         return False, "zapret2 запущен вручную: нет сохранённого конфига"
 
     return False, "Не удалось перезапустить zapret2"
+
+
+def _elevate(exe_path: str, cwd: str | None = None) -> bool:
+    """Запускает программу с повышенными правами через UAC (ShellExecute runas).
+
+    Возвращает True, если запуск инициирован (пользователь подтвердит UAC).
+    Если процесс уже запущен с правами администратора — просто запускаем.
+    """
+    if is_admin():
+        try:
+            subprocess.Popen([exe_path], cwd=cwd,
+                             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+            return True
+        except Exception:
+            return False
+    try:
+        rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe_path, None, cwd, 1)
+        # ShellExecuteW возвращает >32 при успехе, <=32 при ошибке/отказе
+        return rc > 32
+    except Exception:
+        return False
 
 
 def _latest_zapret_config() -> str | None:
