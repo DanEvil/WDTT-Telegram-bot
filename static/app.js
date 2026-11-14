@@ -470,6 +470,10 @@
         <button class="btn" style="margin-top:10px" onclick="adminAddServer(this)">🚀 Установить панель на сервер</button>
         <p class="note" style="margin-top:8px">Установка занимает 2–10 минут: панель скачается, поднимется, сменятся дефолтные логин/пароль, выставится лимит. Логин и пароль панели покажутся в списке установок.</p></div>
        <div class="card"><h3>Установки серверов</h3>${installs}</div>
+       <div class="card"><h3>📞 VK-звонки (хеши)</h3>
+        <p class="note">Новым клиентам сразу выдаётся по 4 VK-вызова (vk_hash) с ротацией VK-аккаунтов; панель ограничивает максимум в 4 на профиль. Кнопка ниже добивает хеши до 4 всем старым активным клиентам (работает фоном, результат — в логе бота).</p>
+        <button class="btn" style="margin-top:8px" onclick="adminBackfillVk(this)">🔄 Добить VK-хеши до 4 у всех клиентов</button>
+        <p class="note" id="vk_backfill_note" style="margin-top:8px"></p></div>
        <div class="card"><h3>👮 Администраторы</h3>${admins}
         <input id="adm_id" class="inp" placeholder="Telegram ID нового админа" inputmode="numeric" autocomplete="off" style="margin-top:8px">
         <button class="btn" style="margin-top:8px" onclick="adminAddAdmin(this)">➕ Назначить администратора по ID</button>
@@ -555,6 +559,20 @@
     } catch (e) {
       toast(e.message);
       btn.disabled = false;
+    }
+  };
+
+  window.adminBackfillVk = async function (btn) {
+    btn.disabled = true; btn.textContent = '⏳ Запущено…';
+    const note = document.getElementById('vk_backfill_note');
+    try {
+      const r = await api('/api/v1/admin/backfill-vk', { method: 'POST', body: '{}' });
+      if (note) note.textContent = '✅ Задача запущена: всем активным клиентам добьются хеши до ' + (r.target || 4) + '. Результат — в логе бота.';
+      toast('🔄 Бэкфилл VK-хешей запущен');
+    } catch (e) {
+      btn.disabled = false; btn.textContent = '🔄 Добить VK-хеши до 4 у всех клиентов';
+      if (note) note.textContent = '⚠️ ' + e.message;
+      toast(e.message);
     }
   };
 

@@ -510,6 +510,23 @@ async def migrate_sub_ids() -> None:
 # перетрёт cookies, и хеш будет выдан не тому VK-аккаунту, который посчитан.
 _vk_cookies_lock = asyncio.Lock()
 
+_vk_no_accounts_notified = False
+
+
+async def _notify_no_vk_accounts_once() -> None:
+    """Один раз за процесс сообщает админу, что VK-аккаунты не заданы и хеши не создаются."""
+    global _vk_no_accounts_notified
+    if _vk_no_accounts_notified:
+        return
+    _vk_no_accounts_notified = True
+    try:
+        await notify_admin(
+            "⚠️ VK-аккаунты не заданы — VK-хеши (звонки) клиентам не создаются. "
+            "Добавьте профиль: ➕ VK аккаунт (название, затем cookies)."
+        )
+    except Exception:
+        log.warning("не удалось уведомить админа об отсутствии VK-аккаунтов", exc_info=True)
+
 
 async def _pick_vk_account(server_id: int | None) -> dict | None:
     """VK-аккаунт с наименьшим числом выданных хешей (по серверу, при равенстве — всего).
@@ -570,6 +587,9 @@ async def _ensure_vk_hash(client: WdttClient, pwd: str, server_id: int | None = 
         missing = max(0, target - len(existing))
         if missing <= 0:
             return  # уже есть 4 (или больше) настоящих хеша
+        if not await list_vk_accounts():
+            # без VK-аккаунтов хеши не создаются вообще — пусть админ увидит это в боте
+            await _notify_no_vk_accounts_once()
 
         new_hashes: list[str] = []
         for _ in range(missing):

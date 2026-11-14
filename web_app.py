@@ -904,7 +904,9 @@ async def handle_buy(request: web.Request) -> web.Response:
                 max_devices=int(plan.get("max_devices") or 1),
                 vk_hash="",
             )
-            await _ensure_vk_hash(client, pwd)
+            import bot as b  # lazy: избегаем циклического импорта
+            # те же 4 VK-вызова с ротацией аккаунтов, что и в боте (bot._ensure_vk_hash)
+            await b._ensure_vk_hash(client, pwd, server_id=sid)
             await upsert_customer(sub_id, pwd, expires, plan["id"], sid,
                                   username=session.get("username"))
             link = await client.find_link(pwd)
@@ -1465,18 +1467,6 @@ async def has_used_trial_web(telegram_id: int) -> bool:
     async with db_conn() as db:
         cur = await db.execute("SELECT 1 FROM trials WHERE telegram_id = ?", (telegram_id,))
         return await cur.fetchone() is not None
-
-async def _ensure_vk_hash(client: WdttClient, pwd: str) -> None:
-    from config import WDTT_VK_HASH
-    if WDTT_VK_HASH:
-        return
-    try:
-        info = await client.get_user_info(pwd) or {}
-        if WdttClient._clean_hash_pieces(str(info.get("vk_hash") or "")):
-            return
-        await client.create_vk_call(pwd)
-    except Exception as e:
-        log.warning("VK-вызов для %s не создан (%s)", pwd[:2], e)
 
 # ---------- API для мобильного приложения ----------
 

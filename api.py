@@ -781,6 +781,33 @@ async def h_admin_installs(request: web.Request) -> web.Response:
     })
 
 
+# ---------- VK-хеши (звонки) клиентов ----------
+
+async def h_admin_backfill_vk(request: web.Request) -> web.Response:
+    """POST /api/v1/admin/backfill-vk — добить VK-хеши до VK_HASHES_PER_USER (4) всем
+    активным клиентам, у кого их меньше. Долгая операция — выполняется фоном, ответ 202.
+    Только админ."""
+    uid = user_id_from_request(request)
+    deny = _admin_only(uid)
+    if deny:
+        return deny
+
+    import bot as b  # lazy: избегаем циклического импорта
+
+    async def _bg() -> None:
+        try:
+            result = await b.backfill_vk_hashes()
+            log.info("api-admin tg=%s: backfill VK-хешей завершён: %s", uid, result)
+        except Exception:
+            log.exception("api-admin tg=%s: backfill VK-хешей упал", uid)
+
+    asyncio.create_task(_bg())
+    log.info("api-admin tg=%s запустил backfill VK-хешей до %s", uid, config.VK_HASHES_PER_USER)
+    return web.json_response(
+        {"ok": True, "started": True, "target": config.VK_HASHES_PER_USER}, status=202
+    )
+
+
 # ---------- управление администраторами (через админ-панель) ----------
 
 async def h_admin_admins(request: web.Request) -> web.Response:
@@ -1006,6 +1033,7 @@ def register_v1_routes(app: web.Application, prefix: str = "/api/v1") -> None:
     app.router.add_get(f"{prefix}/admin", h_admin_overview)
     app.router.add_post(f"{prefix}/admin/servers", h_admin_add_server)
     app.router.add_get(f"{prefix}/admin/installs", h_admin_installs)
+    app.router.add_post(f"{prefix}/admin/backfill-vk", h_admin_backfill_vk)
     app.router.add_get(f"{prefix}/admin/admins", h_admin_admins)
     app.router.add_post(f"{prefix}/admin/admins", h_admin_add_admin)
     app.router.add_post(f"{prefix}/admin/admins/remove", h_admin_remove_admin)
