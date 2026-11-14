@@ -32,6 +32,8 @@ h1 { font-size: clamp(1.4rem, 3vw, 1.9rem); line-height: 1.25; }
 h2 { font-size: clamp(1.15rem, 2.4vw, 1.45rem); }
 .page-title { margin: .2rem 0 1.2rem; letter-spacing: -.02em; }
 .page-title + .hero { margin-top: 0; }
+/* подзаголовок страницы — как <small> в шапке Mini App (.header small) */
+.page-sub { margin: -.9rem 0 1.2rem; font-size: 13px; font-weight: 400; color: var(--muted); letter-spacing: 0; }
 
 /* ===== шапка ===== */
 .topbar {

@@ -255,8 +255,9 @@ def _site_nav_html(active: str, session: dict | None) -> str:
     return f'<nav class="nav" aria-label="Разделы сайта">{links}</nav>'
 
 
-def _page(title: str, body: str, session: dict | None = None, active: str = "") -> str:
+def _page(title: str, body: str, session: dict | None = None, active: str = "", subtitle: str = "") -> str:
     # Шапка сайта: бренд, вкладки-разделы и кнопка «Бот в Telegram».
+    # subtitle — как <small> под заголовком в Mini App (headHtml).
     tg_btn = (
         f"<a class='tg-btn' href='{_bot_link()}' target='_blank' rel='noopener'>"
         f"<svg class='tg-ico' viewBox='0 0 24 24' aria-hidden='true'><path fill='currentColor' d="
@@ -286,6 +287,7 @@ def _page(title: str, body: str, session: dict | None = None, active: str = "") 
 {_site_nav_html(active, session)}
 <main id="main">
 <h1 class="page-title">{html.escape(title)}</h1>
+{"<p class='page-sub'>" + html.escape(subtitle) + "</p>" if subtitle else ""}
 {body}
 </main>
 <script src="/static/site.js"></script>
@@ -1052,17 +1054,16 @@ def _instruction_platforms(win_url: str) -> dict:
 
 
 def _platform_cards_html(plats: dict) -> str:
-    """Карточки выбора устройства — как на экране «Инструкция» в Mini App."""
+    """Карточки выбора устройства — в точности как на экране «Инструкция» в Mini App."""
     cards = []
     for key in ("android", "ios", "windows"):
         p = plats.get(key)
         if not p:
             continue
-        ico = {"android": "🤖", "ios": "🍎", "windows": "🪟"}.get(key, "📱")
         sub = p.get("app_label") or "Пошаговая инструкция"
         cards.append(
             f"<a class='card dev-card' href='/instruction/{key}'>"
-            f"<h3>{ico} {html.escape(p['title'].split(' ', 1)[-1])}</h3>"
+            f"<h3>{html.escape(p['title'])}</h3>"
             f"<p class='note'>{html.escape(sub)}</p>"
             f"<span class='btn secondary small'>Открыть инструкцию →</span>"
             f"</a>"
@@ -1071,26 +1072,22 @@ def _platform_cards_html(plats: dict) -> str:
 
 
 async def handle_instruction(request: web.Request) -> web.Response:
-    """Экран «Инструкция»: выбор устройства (как в Mini App), ниже — общий порядок шагов."""
+    """Экран «Инструкция» — в точности как в Mini App: выбор устройства, без доп. карточек."""
     win_url = await get_app_windows_url()
     plats = _instruction_platforms(win_url)
 
     body = f"""
     <div class="card">
-      <p class="note" style="margin:0">Выберите устройство — откроется отдельная страница с пошаговой
-        инструкцией для него. Если выбрали не то устройство — вернитесь и выберите другое.</p>
+      <p class="note" style="margin:0">Выберите устройство — откроется отдельная вкладка с пошаговой
+        инструкцией для него. Если выбрали не то устройство — нажмите «Назад» и выберите другое.</p>
     </div>
     <div class="dev-grid">{_platform_cards_html(plats)}</div>
-    <div class="card">
-      <h3>Общий порядок подключения</h3>
-      <p><b>1.</b> Скачайте приложение для вашего устройства (ссылки — в инструкции к платформе).</p>
-      <p><b>2.</b> Скопируйте вашу ссылку <code>wdtt://...</code> из профиля
-         (в приложении, на сайте или в боте Telegram).</p>
-      <p><b>3.</b> Вставьте ссылку в приложение и нажмите «Подключить».
-         Готово — весь трафик идёт через защищённый туннель.</p>
-    </div>
     """
-    return web.Response(text=_page("Инструкция", body, _get_session(request), active="Инструкция"), content_type="text/html")
+    return web.Response(
+        text=_page("Инструкция", body, _get_session(request), active="Инструкция",
+                   subtitle="Выберите ваше устройство"),
+        content_type="text/html",
+    )
 
 
 async def handle_instruction_device(request: web.Request) -> web.Response:
@@ -1106,7 +1103,7 @@ async def handle_instruction_device(request: web.Request) -> web.Response:
 
     links = ""
     if p.get("app_url"):
-        links += (f"<p><a class='btn' href='{html.escape(p['app_url'], quote=True)}' target='_blank' rel='noopener'>"
+        links += (f"<p><a class='btn secondary' href='{html.escape(p['app_url'], quote=True)}' target='_blank' rel='noopener'>"
                   f"{html.escape(p['app_label'])}</a></p>")
     for url, label in p.get("links", []):
         links += (f"<p><a href='{html.escape(url, quote=True)}' target='_blank' rel='noopener'>"
@@ -1126,8 +1123,11 @@ async def handle_instruction_device(request: web.Request) -> web.Response:
       {steps}
     </div>
     """
-    title = f"Инструкция — {p['title'].split(' ', 1)[-1]}"
-    return web.Response(text=_page(title, body, _get_session(request), active="Инструкция"), content_type="text/html")
+    return web.Response(
+        text=_page(p["title"], body, _get_session(request), active="Инструкция",
+                   subtitle=instr.INTRO),
+        content_type="text/html",
+    )
 
 # ---------- админ ----------
 
