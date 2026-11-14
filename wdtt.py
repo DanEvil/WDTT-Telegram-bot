@@ -293,8 +293,11 @@ class WdttClient:
         except Exception:
             return link
         existing = WdttClient._clean_hash_pieces(str(obj.get("hash") or ""))
-        if existing:
-            return link
+        if existing == hashes:
+            return link  # в ссылке уже актуальный набор хэшей
+        # Панель хранит в поле link снапшот хэшей на момент генерации ссылки;
+        # если в записи пользователя набор изменился (добили VK-звонки),
+        # перезаписываем — иначе клиент получает протухшие хэши и сваливается на капчу.
         obj["hash"] = ",".join(hashes)
         encoded = base64.b64encode(
             json.dumps(obj, separators=(",", ":")).encode("utf-8")
@@ -362,13 +365,14 @@ class WdttClient:
 
     @staticmethod
     def _ensure_hash(link: str, vk_hash: str, hash_limit: int = 0) -> str:
-        """Прописывает vk_hash из панели в colon-ссылку, если он не указан.
+        """Синхронизирует сегмент хэша в colon-ссылке с актуальным vk_hash из панели.
 
         Формат: wdtt://host:dtls:wg:local:pass:hash[,hash…][#имя].
         Сегмент хэша заменяем значением из записи пользователя
-        (GET /panel/api/users -> vk_hash), если он пуст или содержит
-        плейсхолдер "VK_HASH". hash_limit=1 (iOS) берёт только первый хэш,
-        как делает панель (vkhash.HashLimit).
+        (GET /panel/api/users -> vk_hash), если он пуст, содержит плейсхолдер
+        "VK_HASH" ИЛИ отличается от актуального набора (панель хранит в sub-ссылках
+        снапшот на момент рендера — после добивки VK-звонков он протухает).
+        hash_limit=1 (iOS) берёт только первый хэш, как делает панель (vkhash.HashLimit).
         """
         if not link or not link.startswith("wdtt://"):
             return link
@@ -381,8 +385,8 @@ class WdttClient:
         fields = core.split(":")
         if len(fields) < 6:
             return link
-        if WdttClient._clean_hash_pieces(":".join(fields[5:])):
-            return link  # реальный хэш уже прописан панелью
+        if WdttClient._clean_hash_pieces(":".join(fields[5:])) == hashes:
+            return link  # уже актуальный набор хэшей
         fields = fields[:5] + [",".join(hashes)]
         out = "wdtt://" + ":".join(fields)
         return out + ("#" + name if sep else "")

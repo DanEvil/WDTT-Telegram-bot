@@ -237,10 +237,15 @@ async def test_wdtt_client(base_url):
     uni2 = "wdtt://" + _b64u.b64encode(_jsonu.dumps(payload2).encode()).decode("ascii")
     obj2 = _jsonu.loads(_b64u.b64decode(c._ensure_payload_hash(uni2, "vk9").split("wdtt://", 1)[1]))
     assert obj2["hash"] == "vk9"
-    # реальный хэш в payload не трогается
-    payload3 = {"ps": "WDTT", "add": "1.2.3.4", "pass": pw, "hash": "real"}
+    # устаревший хэш в payload заменяется актуальным набором из записи панели
+    payload3 = {"ps": "WDTT", "add": "1.2.3.4", "pass": pw, "hash": "stale"}
     uni3 = "wdtt://" + _b64u.b64encode(_jsonu.dumps(payload3).encode()).decode("ascii")
-    assert c._ensure_payload_hash(uni3, "vk9") == uni3
+    obj3 = _jsonu.loads(_b64u.b64decode(c._ensure_payload_hash(uni3, "vk9,vk8").split("wdtt://", 1)[1]))
+    assert obj3["hash"] == "vk9,vk8" and obj3["pass"] == pw
+    # актуальный набор хэшей не трогается
+    payload4 = {"ps": "WDTT", "add": "1.2.3.4", "pass": pw, "hash": "vk9,vk8"}
+    uni4 = "wdtt://" + _b64u.b64encode(_jsonu.dumps(payload4).encode()).decode("ascii")
+    assert c._ensure_payload_hash(uni4, "vk9,vk8") == uni4
 
     # VK-вызов: hash создаётся и применяется к пользователю
     h = await c.create_vk_call(pw)

@@ -17,11 +17,29 @@
       "default_server": "",
       "default_ports": "",
       "description": "AIVPN — замаскированный UDP-туннель (infosave2007/aivpn)"
+    },
+    {
+      "id": "openflux",
+      "name": "OpenFlux",
+      "scheme": "openflux",
+      "default_server": "",
+      "default_ports": "",
+      "transport": "yandex",
+      "url": "",
+      "secret": "",
+      "inbound": "socks5",
+      "mode": "client",
+      "codec": "batched",
+      "description": "OpenFlux — TCP/UDP туннель с pluggable transports (p1neappleXpress/OpenFlux)"
     }
   ],
   "default_profile": "wdtt",
   "auto_connect": false,
   "minimize_to_tray": true,
+  "api_url": "http://127.0.0.1:8082",
+  "api_token": "",
+  "auth_token": "",
+  "auth_user": {},
   "direct_routes": {
     "enabled": true,
     "url": "",
@@ -81,6 +99,47 @@
     ],
     "last_updated": null
   },
-  "api_url": "http://127.0.0.1:8082",
-  "api_token": ""
+  "tunnel_routes": {
+    "enabled": false,
+    "domains": [],
+    "ips": [],
+    "apps": []
+  },
+  "connection_failover": {
+    "enabled": true,
+    "auto_select": true,
+    "order": [
+      "aivpn",
+      "wdtt"
+    ],
+    "slow_threshold_ms": 3000,
+    "measure_ping": true,
+    "measure_speed": true,
+    "check_sites": [
+      "https://www.google.com",
+      "https://www.youtube.com",
+      "https://www.apple.com"
+    ],
+    "check_timeout_s": 5
+  },
+  "speed_test": {
+    "enabled": true,
+    "threshold_ms": 3000,
+    "timeout_s": 8,
+    "sites": [
+      "https://www.google.com",
+      "https://www.youtube.com",
+      "https://www.apple.com",
+      "https://music.apple.com",
+      "https://www.icloud.com"
+    ],
+    "results": {},
+    "last_updated": null
+  },
+  "route_learning": {
+    "enabled": true,
+    "auto_apply": true,
+    "min_samples": 3,
+    "routes": {}
+  }
 }
