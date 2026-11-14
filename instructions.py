@@ -64,6 +64,55 @@ PLATFORMS = {
 
 INTRO = "Подключение к K.O. Gateway"
 
+# Совместимые клиенты и форматы ссылок — как в README апстрима ildarmaga/wdtt.
+CLIENTS = [
+    {"client": "VK Turn Proxy", "platform": "iOS",
+     "format": "wdtt:// (colon), 1-й хеш из ссылки или VK_HASH"},
+    {"client": "WDTT", "platform": "Android",
+     "format": "wdtt:// (colon), до 4 хешей через запятую или VK_HASH"},
+    {"client": "PWDTT", "platform": "Desktop Win/Linux",
+     "format": "wdtt:// (colon), до 4 хешей — клиент из релизов WDTT"},
+    {"client": "WDTT", "platform": "Windows",
+     "format": "wdtt:// (colon), до 4 хешей через запятую или VK_HASH"},
+    {"client": "qWDTT", "platform": "Android (fork)",
+     "format": "qwdtt://, hashes=h1,h2,… (до 4) или VK_HASH"},
+    {"client": "WDTT (qwdtt)", "platform": "Windows",
+     "format": "qwdtt://, hashes=h1,h2,… (до 4) или VK_HASH"},
+]
+
+# Про VK-хеш — как в апстриме: создаётся в панели (Настройки → VK Creator).
+VK_HASH_NOTE = (
+    "VK-хеш для подключения создаётся автоматически в панели WDTT "
+    "(Настройки → VK Creator) и попадает в вашу ссылку подключения — "
+    "вводить его вручную не нужно."
+)
+
+
+def clients_table_html() -> str:
+    """Таблица совместимых клиентов для сайта и мини-аппа."""
+    import html as _html
+    rows = "".join(
+        "<tr><td><b>{}</b></td><td>{}</td><td><code>{}</code></td></tr>".format(
+            _html.escape(c["client"]), _html.escape(c["platform"]), _html.escape(c["format"])
+        )
+        for c in CLIENTS
+    )
+    return (
+        '<table class="clients-table"><thead><tr>'
+        "<th>Клиент</th><th>Платформа</th><th>Формат ссылки</th>"
+        f"</tr></thead><tbody>{rows}</tbody></table>"
+    )
+
+
+def clients_text() -> str:
+    """Та же таблица plain-текстом для Telegram-бота (без <table>)."""
+    lines = ["📱 Совместимые клиенты:"]
+    for c in CLIENTS:
+        lines.append(f"• <b>{c['client']}</b> ({c['platform']}): <code>{c['format']}</code>")
+    lines.append("")
+    lines.append(VK_HASH_NOTE)
+    return "\n".join(lines)
+
 
 def platforms_with_windows_app(url: str) -> dict:
     """Копия PLATFORMS с подменённой ссылкой на приложение Windows (значение из админ-панели)."""

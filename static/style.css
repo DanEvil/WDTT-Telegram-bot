@@ -317,6 +317,13 @@ select:disabled { opacity: .5; }
   body { background: radial-gradient(1100px 650px at 50% -12%, rgba(224, 30, 43, .12), transparent), var(--bg); }
 }
 
+/* Таблица совместимых клиентов (как в README апстрима wdtt) */
+.clients-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.clients-table th, .clients-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.clients-table th { color: var(--muted-foreground); font-weight: 600; }
+.clients-table code { font-size: 12px; word-break: break-all; }
+@media (max-width: 600px) { .clients-table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; } }
+
 /* пошаговые инструкции со скриншотами */
 .instr-step{margin:1rem 0;text-align:center}
 .instr-step img{max-width:100%;max-height:420px;border-radius:10px;border:1px solid var(--border,#333)}

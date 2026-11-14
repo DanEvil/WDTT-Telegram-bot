@@ -201,7 +201,11 @@ NAV_BUTTONS = {
     "⚙️ Админка",
 }
 
-INSTRUCTION_INTRO = "📖 <b>Подключение к WDTT</b>\n\nВыберите вашу платформу:"
+INSTRUCTION_INTRO = (
+    "📖 <b>Подключение к WDTT</b>\n\n"
+    "Выберите вашу платформу:\n\n"
+    + __import__("instructions").clients_text()
+)
 
 INSTRUCTION_ANDROID = (
     "🤖 <b>Android</b> — установите приложение "
@@ -1196,7 +1200,7 @@ async def nav_instruction(message: Message) -> None:
         kb_rows.append([InlineKeyboardButton(text="🌐 Инструкция на сайте", url=site_instr)])
     kb_rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="instr:main")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
-    await message.answer(INSTRUCTION_INTRO, reply_markup=kb)
+    await message.answer(INSTRUCTION_INTRO, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
 async def _instruction_platforms() -> dict:

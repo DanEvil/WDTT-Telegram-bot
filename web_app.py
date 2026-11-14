@@ -1157,6 +1157,7 @@ def _platform_cards_html(plats: dict) -> str:
 
 async def handle_instruction(request: web.Request) -> web.Response:
     """Экран «Инструкция» — в точности как в Mini App: выбор устройства, без доп. карточек."""
+    import instructions as instr
     win_url = await get_app_windows_url()
     plats = _instruction_platforms(win_url)
 
@@ -1164,6 +1165,11 @@ async def handle_instruction(request: web.Request) -> web.Response:
     <div class="card">
       <p class="note" style="margin:0">Выберите устройство — откроется отдельная вкладка с пошаговой
         инструкцией для него. Если выбрали не то устройство — нажмите «Назад» и выберите другое.</p>
+    </div>
+    <div class="card">
+      <h3>📱 Совместимые клиенты</h3>
+      {instr.clients_table_html()}
+      <p class="note">{html.escape(instr.VK_HASH_NOTE)}</p>
     </div>
     <div class="dev-grid">{_platform_cards_html(plats)}</div>
     """

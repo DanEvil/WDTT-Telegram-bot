@@ -690,7 +690,12 @@ async def h_instructions(request: web.Request) -> web.Response:
             "links": [{"url": u, "label": l} for u, l in p.get("links", [])],
             "steps": [{"img": instr.step_img(img) if img else None, "caption": cap} for img, cap in p["steps"]],
         })
-    return web.json_response({"intro": instr.INTRO, "platforms": platforms})
+    return web.json_response({
+        "intro": instr.INTRO,
+        "clients": instr.CLIENTS,
+        "vk_hash_note": instr.VK_HASH_NOTE,
+        "platforms": platforms,
+    })
 
 
 # ---------- админ-панель (общая для сайта и мини-аппа) ----------

@@ -387,6 +387,13 @@
     let data = null;
     try { data = await getInstr(); } catch (e) { /* фолбэк ниже */ }
     const platforms = (data && data.platforms && data.platforms.length) ? data.platforms : fallbackPlatforms();
+    const clients = (data && data.clients && data.clients.length) ? data.clients : null;
+    const clientsHtml = clients ? `
+      <div class="card"><h3>📱 Совместимые клиенты</h3>
+        <table class="clients-table"><thead><tr><th>Клиент</th><th>Платформа</th><th>Формат ссылки</th></tr></thead>
+        <tbody>${clients.map((c) => `<tr><td><b>${esc(c.client)}</b></td><td>${esc(c.platform)}</td><td><code>${esc(c.format)}</code></td></tr>`).join('')}</tbody></table>
+        ${data.vk_hash_note ? `<p class="note">${esc(data.vk_hash_note)}</p>` : ''}
+      </div>` : '';
     const cards = platforms.map((p) => `
       <button class="card dev-card" data-dev="${esc(p.key)}">
         <h3>${esc(p.title)}</h3>
@@ -395,6 +402,7 @@
       </button>`).join('');
     return headHtml('Инструкция', 'Выберите ваше устройство') +
       `<div class="card"><p class="note" style="margin:0">Выберите устройство — откроется отдельная вкладка с пошаговой инструкцией для него. Если выбрали не то устройство — нажмите «Назад» и выберите другое.</p></div>` +
+      clientsHtml +
       cards;
   }
 
