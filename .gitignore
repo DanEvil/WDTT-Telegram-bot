@@ -8,3 +8,4 @@ venv/
 .tmp/
 orig_web_app.py
 OpenFlux/
+.coverage
