@@ -1,5 +1,6 @@
 .env
 *.db
+cookies-vk.json
 __pycache__/
 *.pyc
 .venv/

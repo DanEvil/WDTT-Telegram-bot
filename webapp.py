@@ -265,8 +265,17 @@ async def error_logger_mw(request: web.Request, handler):
         )
 
 
+@web.middleware
+async def no_cache_mw(request: web.Request, handler):
+    """Telegram WebView агрессивно кэширует Mini App: без Cache-Control старый
+    app.js показывается неделями после деплоя. Форсируем revalidate по ETag."""
+    resp = await handler(request)
+    resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return resp
+
+
 def make_webapp() -> web.Application:
-    app = web.Application(middlewares=[error_logger_mw])
+    app = web.Application(middlewares=[error_logger_mw, no_cache_mw])
     app.router.add_post("/api/auth", api_auth)
     app.router.add_get("/api/me", api_me)
     app.router.add_get("/api/plans", api_plans)

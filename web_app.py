@@ -1599,8 +1599,17 @@ async def handle_404(request: web.Request) -> web.Response:
 
 # ---------- приложение ----------
 
+@web.middleware
+async def no_cache_mw(request: web.Request, handler):
+    """Браузер/клиент не должен кэшировать страницы и статику сайта надолго:
+    без Cache-Control после деплоя пользователи видят старую версию."""
+    resp = await handler(request)
+    resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return resp
+
+
 def make_app() -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[no_cache_mw])
     # статика сайта (CSS/JS)
     app.router.add_static("/static/", path=os.path.join(os.path.dirname(__file__), "static"), name="static")
     app.router.add_get("/", handle_index)
