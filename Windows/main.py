@@ -752,8 +752,12 @@ class GatewayApp:
             elif pid == "openflux" and data.get("openflux"):
                 of = data["openflux"]
                 p["transport"] = of.get("transport", "yandex")
-                p["url"] = of.get("url", "")
-                p["secret"] = of.get("secret", "")
+                # url/secret сервером больше не отдаются — берём только
+                # непустые значения, локальный конфиг не затираем
+                if of.get("url"):
+                    p["url"] = of["url"]
+                if of.get("secret"):
+                    p["secret"] = of["secret"]
                 p["inbound"] = of.get("inbound", "socks5")
                 p["codec"] = of.get("codec", "batched")
         # Перерисуем настройки, если уже построены

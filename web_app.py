@@ -1148,9 +1148,6 @@ async def handle_admin(request: web.Request) -> web.Response:
     ) or "<tr><td colspan='5'>—</td></tr>"
     running = admin_ops.any_install_running()
     win_url = await get_app_windows_url()
-    from db import get_openflux_url, get_openflux_secret
-    of_url = await get_openflux_url()
-    of_secret = await get_openflux_secret()
     db_admins = await list_admins()
     have = {a["telegram_id"] for a in db_admins}
     admins_list = [
@@ -1241,13 +1238,6 @@ async def handle_admin(request: web.Request) -> web.Response:
       <p><input name="app_windows_url" value="{html.escape(win_url)}" style="width:100%" placeholder="https://…/pwdtt-client-windows-amd64.exe"></p>
       <p><button class="btn" type="submit">💾 Сохранить ссылку PWDTT</button>
          <span class="note">Оставьте пустым, чтобы вернуть ссылку из конфига по умолчанию.</span></p>
-    </form>
-    <form method="post" action="/admin/settings/openflux" class="card">
-      <p>🌀 <b>OpenFlux</b> — URL документа-транспорта (Yandex) и секрет шифрования; попадают в ссылки подключения всем пользователям:</p>
-      <p><input name="openflux_url" value="{html.escape(of_url)}" style="width:100%" placeholder="https://disk.yandex.ru/i/…"></p>
-      <p><input name="openflux_secret" value="{html.escape(of_secret)}" style="width:100%" placeholder="секрет шифрования (hex)"></p>
-      <p><button class="btn" type="submit">💾 Сохранить OpenFlux</button>
-         <span class="note">Оставьте пустым, чтобы вернуть значение из конфига по умолчанию.</span></p>
     </form>
     <p><a href='/'>На главную</a></p>
     """
@@ -1400,37 +1390,6 @@ async def handle_admin_settings_windows(request: web.Request) -> web.Response:
             await db.commit()
         log.info("site-admin tg=%s сбросил ссылку PWDTT на дефолт", tg_id)
     raise web.HTTPFound("/admin#settings")
-
-async def handle_admin_settings_openflux(request: web.Request) -> web.Response:
-    """POST /admin/settings/openflux — задать URL документа OpenFlux и секрет из админ-панели сайта."""
-    guard = _admin_guard(request)
-    if not guard:
-        return await _admin_forbidden()
-    _, tg_id = guard
-    data = await request.post()
-    of_url = _field(data, "openflux_url").strip()
-    of_secret = _field(data, "openflux_secret").strip()
-    from api import _valid_http_url
-    if of_url and not _valid_http_url(of_url):
-        return web.Response(
-            text=_page("Ошибка", "<p class='err'>URL должен начинаться с https:// или http:// (без пробелов).</p>"),
-            status=400,
-        )
-    if of_url:
-        await set_setting("openflux_url", of_url)
-    else:
-        async with db_conn() as db:
-            await db.execute("DELETE FROM settings WHERE key = 'openflux_url'")
-            await db.commit()
-    if of_secret:
-        await set_setting("openflux_secret", of_secret)
-    else:
-        async with db_conn() as db:
-            await db.execute("DELETE FROM settings WHERE key = 'openflux_secret'")
-            await db.commit()
-    log.info("site-admin tg=%s задал OpenFlux url=%s", tg_id, of_url)
-    raise web.HTTPFound("/admin#settings")
-
 
 async def handle_logout(request: web.Request) -> web.Response:
     response = web.HTTPFound("/")
@@ -1639,7 +1598,6 @@ def make_app() -> web.Application:
     app.router.add_post("/admin/invites/create", handle_admin_create_invite)
     app.router.add_post("/admin/invites/revoke", handle_admin_revoke_invite)
     app.router.add_post("/admin/settings/windows", handle_admin_settings_windows)
-    app.router.add_post("/admin/settings/openflux", handle_admin_settings_openflux)
     app.router.add_get("/logout", handle_logout)
     app.router.add_get("/{tail:.*}", handle_404)
 

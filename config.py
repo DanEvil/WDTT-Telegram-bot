@@ -78,7 +78,7 @@ APP_WINDOWS_URL = os.getenv(
 ).strip()
 
 # OpenFlux: дефолтные параметры подключения (URL документа-транспорта и секрет шифрования).
-# Переопределяются из админ-панели (настройки openflux_url / openflux_secret).
+# Только серверные (env); НЕ отдаются пользователям и больше не редактируются из админ-панели.
 OPENFLUX_URL = os.getenv("OPENFLUX_URL", "").strip()
 OPENFLUX_SECRET = os.getenv("OPENFLUX_SECRET", "").strip()
 
