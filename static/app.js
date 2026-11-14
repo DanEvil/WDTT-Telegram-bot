@@ -58,7 +58,10 @@
   async function auth(attempt) {
     attempt = attempt || 0;
     const initData = tg ? tg.initData : '';
-    const data = await api('/api/auth', { method: 'POST', body: JSON.stringify({ initData }) });
+    // Внутри Telegram — initData; в обычном браузере (сайт) — сессионная кука /api/auth/site
+    const data = initData
+      ? await api('/api/auth', { method: 'POST', body: JSON.stringify({ initData }) })
+      : await api('/api/auth/site', { method: 'POST', body: '{}' });
     token = data.token;
     sessionStorage.setItem('wdtt_token', token);
     window.__starsEnabled = false;
@@ -659,6 +662,27 @@
     // Ждём initData: при открытии из меню чатов Telegram отдаёт его
     // с небольшой задержкой — авторизация должна пройти автоматически.
     const initData = await waitForInitData(4000);
+    if (!initData && !tg) {
+      // Обычный браузер (сайт K.O. Gateway): авторизация по сессионной куке сайта.
+      try {
+        await auth();
+        me = await api('/api/me');
+        render();
+        return;
+      } catch (e) {
+        // Нет сессии — экран входа на сайт.
+        const bot = window.__botUrl || 'https://t.me/KO_Gateway_bot';
+        app.innerHTML = `<div class="view-enter"><div class="card">
+          <div class="hero-title">Вход</div>
+          <div class="hero-sub" style="color:var(--hint)">Войдите, чтобы увидеть подписку, ссылки для подключения и настройки.</div>
+          <p style="margin-top:1.2rem"><a class="btn" href="/login/telegram">🔐 Войти через Telegram</a></p>
+          <p><a class="btn secondary" href="/login">Войти по email</a></p>
+          <p><a class="btn secondary" href="${esc(bot)}" target="_blank" rel="noopener">Открыть бота в Telegram</a></p>
+          <button class="btn secondary" onclick="location.reload()">🔄 Повторить</button></div></div>`;
+        renderNav();
+        return;
+      }
+    }
     if (!initData) {
       const bot = window.__botUrl || 'https://t.me/KO_Gateway_bot';
       const site = window.__siteUrl || '';

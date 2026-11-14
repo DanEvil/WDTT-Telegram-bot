@@ -308,6 +308,60 @@ def _csrf_check_telegram(data: dict) -> bool:
 
 # ---------- маршруты ----------
 
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
+
+async def handle_spa(request: web.Request) -> web.Response:
+    """Главная сайта — тот же SPA, что и Mini App в Telegram (static/index.html).
+
+    Бренд/бот подставляем в window.__* как в webapp.py; __siteUrl намеренно
+    пустой (мы уже на сайте), чтобы ссылка «Наш сайт» не дублировалась.
+    """
+    import json as _json
+    with open(os.path.join(STATIC_DIR, "index.html"), "r", encoding="utf-8") as f:
+        html_text = f.read()
+    brand = BRAND
+    html_text = html_text.replace(
+        "<title>K.O. Gateway — подписка</title>",
+        f"<title>{html.escape(brand)} — подписка</title>",
+    )
+    bot_url = f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else ""
+    html_text = html_text.replace(
+        "<body>",
+        f'<body>\n<script>window.__brand = {_json.dumps(brand)};'
+        f'window.__siteUrl = "";'
+        f'window.__botUrl = {_json.dumps(bot_url)};</script>',
+        1,
+    )
+    resp = web.Response(text=html_text, content_type="text/html")
+    resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return resp
+
+
+async def api_auth_site(request: web.Request) -> web.Response:
+    """POST|GET /api/auth/site — авторизация SPA сайта по сессионной куке.
+
+    Возвращает тот же контракт, что /api/auth в мини-аппе: {token, user, is_admin, ecosystem}.
+    """
+    from api import make_session, ecosystem_payload, app_windows_url_effective, is_admin_uid
+    sess = _get_session(request)
+    if not sess:
+        return web.json_response({"error": "login required"}, status=401)
+    uid = _sub_id(sess)
+    token = make_session(uid, TELEGRAM_TOKEN)
+    return web.json_response({
+        "token": token,
+        "user": {
+            "id": uid,
+            "first_name": sess.get("username") or sess.get("email") or "",
+            "username": sess.get("username") or "",
+        },
+        "is_admin": is_admin_uid(uid),
+        "stars_enabled": False,
+        "ecosystem": ecosystem_payload(await app_windows_url_effective()),
+    })
+
+
 def _plans_grid_html(plans: list[dict]) -> str:
     """Сетка тарифов (как на вкладке «Тарифы» в Mini App)."""
     out = '<div class="plans">'
@@ -1471,8 +1525,18 @@ async def api_plans(request: web.Request) -> web.Response:
             "days": p["days"],
             "traffic_gb": p.get("traffic_gb", 0),
             "max_devices": p.get("max_devices", 1),
+            "description": p.get("description", ""),
+            "addon": False,
         })
-    return web.json_response({"plans": plans})
+    from plans import DEVICE_ADDONS, TRIAL
+    addons = [{
+        "id": p["id"], "name": p["name"], "price": float(p["price"]), "currency": "RUB",
+        "days": p["days"], "traffic_gb": p.get("traffic_gb", 0),
+        "max_devices": p.get("max_devices", 1), "description": p.get("description", ""),
+        "addon": True,
+    } for p in DEVICE_ADDONS]
+    trial = dict(TRIAL) | {"price": 0, "free": True}
+    return web.json_response({"plans": plans, "addons": addons, "trial": trial, "stars_enabled": False})
 
 
 async def api_create_payment(request: web.Request) -> web.Response:
@@ -1601,7 +1665,7 @@ def make_app() -> web.Application:
     app = web.Application(middlewares=[no_cache_mw])
     # статика сайта (CSS/JS)
     app.router.add_static("/static/", path=os.path.join(os.path.dirname(__file__), "static"), name="static")
-    app.router.add_get("/", handle_index)
+    app.router.add_get("/", handle_spa)
     app.router.add_get("/plans", handle_plans)
     app.router.add_get("/register", handle_register_get)
     app.router.add_post("/register", handle_register_post)
@@ -1632,10 +1696,26 @@ def make_app() -> web.Application:
     app.router.add_get("/logout", handle_logout)
     app.router.add_get("/{tail:.*}", handle_404)
 
-    # API для Android-приложения (покупка подписки из приложения)
+    # API для мобильного приложения (покупка подписки из приложения)
     app.router.add_get("/api/plans", api_plans)
     app.router.add_post("/api/create-payment", api_create_payment)
     app.router.add_get("/api/check-payment", api_check_payment)
+
+    # Тот же /api/* контракт, что у Mini App (static/app.js) — чтобы сайт-SPA
+    # работал в браузере так же, как приложение в Telegram
+    from webapp import (
+        api_auth as webapp_api_auth, api_me, api_trial,
+        api_pay_yookassa, api_pay_stars, api_referrals, api_check_payment as webapp_check_payment,
+    )
+    app.router.add_post("/api/auth", webapp_api_auth)
+    app.router.add_get("/api/me", api_me)
+    app.router.add_post("/api/trial", api_trial)
+    app.router.add_post("/api/pay/yookassa", api_pay_yookassa)
+    app.router.add_post("/api/pay/stars", api_pay_stars)
+    app.router.add_get("/api/referrals", api_referrals)
+    app.router.add_post("/api/check_payment", webapp_check_payment)
+    app.router.add_get("/api/auth/site", api_auth_site)
+    app.router.add_post("/api/auth/site", api_auth_site)
 
     # Единый API экосистемы (тот же, что у мини-аппа и будущих приложений)
     from api import register_v1_routes

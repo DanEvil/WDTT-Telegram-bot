@@ -302,11 +302,20 @@ select:disabled { opacity: .5; }
   #app { max-width: 620px; }
   .header { font-size: 26px; padding: calc(20px + var(--safe-t)) 20px 12px; }
   .card { margin: 12px 16px; padding: 20px; border-radius: 18px; }
-  .nav { border-radius: 18px 18px 0 0; }
+  /* на планшете/десктопе колонка по центру, нижняя навигация — внутри колонки */
+  .nav {
+    max-width: 620px; margin: 0 auto; width: 100%;
+    border-left: 1px solid var(--border); border-right: 1px solid var(--border);
+    border-radius: 18px 18px 0 0;
+  }
   .btn { font-size: 16px; padding: 15px; border-radius: 14px; }
   .site-link { margin: 10px 16px; }
 }
-@media (min-width: 1024px) { #app { max-width: 680px; } }
+@media (min-width: 1024px) {
+  #app { max-width: 680px; }
+  .nav { max-width: 680px; }
+  body { background: radial-gradient(1100px 650px at 50% -12%, rgba(224, 30, 43, .12), transparent), var(--bg); }
+}
 
 /* пошаговые инструкции со скриншотами */
 .instr-step{margin:1rem 0;text-align:center}
