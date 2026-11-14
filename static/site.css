@@ -106,6 +106,8 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 
 /* ===== тарифы ===== */
 .plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; align-items: stretch; }
+/* заголовок секции аддонов — как в Mini App (мелкий caps) */
+.addons-title { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 1.4rem 0 .6rem; font-weight: 700; }
 .plan {
   background: var(--card); border: 1px solid var(--border); border-radius: .8rem;
   padding: 1.2rem; box-shadow: var(--shadow); display: flex; flex-direction: column;

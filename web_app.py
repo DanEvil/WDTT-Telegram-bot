@@ -237,7 +237,7 @@ def _site_nav_html(active: str, session: dict | None) -> str:
     """
     items = [
         ("/", "🏠", "Главная"),
-        ("/#plans", "🛒", "Тарифы"),
+        ("/plans", "🛒", "Тарифы"),
         ("/instruction", "📖", "Инструкция"),
     ]
     if session:
@@ -308,13 +308,11 @@ def _csrf_check_telegram(data: dict) -> bool:
 
 # ---------- маршруты ----------
 
-async def handle_index(request: web.Request) -> web.Response:
-    session = _get_session(request)
-    plans = await list_plans() or list(PLANS)
-    win_url = await get_app_windows_url()
-    plans_html = '<div class="plans">'
+def _plans_grid_html(plans: list[dict]) -> str:
+    """Сетка тарифов (как на вкладке «Тарифы» в Mini App)."""
+    out = '<div class="plans">'
     for p in plans:
-        plans_html += f"""
+        out += f"""
         <div class="plan">
           <h3>{html.escape(p['name'])}</h3>
           <p class="desc">{html.escape(p.get('description',''))}</p>
@@ -322,7 +320,36 @@ async def handle_index(request: web.Request) -> web.Response:
           <p class="meta">{p['days']} дн. · {'безлимит' if not p.get('traffic_gb') else str(p['traffic_gb']) + ' ГБ'} · до {p.get('max_devices',1)} устр.</p>
           <a href="/buy/{p['id']}" class="btn">Купить</a>
         </div>"""
-    plans_html += "</div>"
+    out += "</div>"
+    return out
+
+
+def _apps_card_html(win_url: str) -> str:
+    return f"""
+    <div class="card apps-card">
+      <h3>📱 Приложения для подключения</h3>
+      <div class="apps">
+        <a class="app-link" href="{APP_ANDROID_URL}" target="_blank" rel="noopener">
+          <span class="app-ico">🤖</span><span>Android<br><small>скачать APK</small></span>
+        </a>
+        <a class="app-link" href="{APP_IOS_TESTFLIGHT_URL}" target="_blank" rel="noopener">
+          <span class="app-ico">🍎</span><span>iOS<br><small>TestFlight → <a href="{APP_IOS_JOIN_URL}" target="_blank" rel="noopener">приглашение</a></small></span>
+        </a>
+        <a class="app-link" href="{win_url}" target="_blank" rel="noopener">
+          <span class="app-ico">🪟</span><span>Windows<br><small>скачать PWDTT</small></span>
+        </a>
+      </div>
+      <p style="color:var(--muted);font-size:.85rem;margin-bottom:0">
+        Пошаговая инструкция со скриншотами — в <a href="/instruction">разделе «Инструкция»</a> и в нашем
+        <a href="{_bot_link() or '#'}">боте Telegram</a>.
+      </p>
+    </div>
+    """
+
+
+async def handle_index(request: web.Request) -> web.Response:
+    session = _get_session(request)
+    win_url = await get_app_windows_url()
     trial_html = ""
     login_cta = ""
     if session:
@@ -345,36 +372,39 @@ async def handle_index(request: web.Request) -> web.Response:
       <a href="/login" class="btn secondary">Войти по email</a>
     </div>
         """ if BOT_USERNAME else ""
-    apps_html = f"""
-    <div class="card apps-card">
-      <h3>📱 Приложения для подключения</h3>
-      <div class="apps">
-        <a class="app-link" href="{APP_ANDROID_URL}" target="_blank" rel="noopener">
-          <span class="app-ico">🤖</span><span>Android<br><small>скачать APK</small></span>
-        </a>
-        <a class="app-link" href="{APP_IOS_TESTFLIGHT_URL}" target="_blank" rel="noopener">
-          <span class="app-ico">🍎</span><span>iOS<br><small>TestFlight → <a href="{APP_IOS_JOIN_URL}" target="_blank" rel="noopener">приглашение</a></small></span>
-        </a>
-        <a class="app-link" href="{win_url}" target="_blank" rel="noopener">
-          <span class="app-ico">🪟</span><span>Windows<br><small>скачать PWDTT</small></span>
-        </a>
-      </div>
-      <p style="color:var(--muted);font-size:.85rem;margin-bottom:0">
-        Пошаговая инструкция со скриншотами — в <a href="/instruction">разделе «Инструкция»</a> и в нашем
-        <a href="{_bot_link() or '#'}">боте Telegram</a>.
-      </p>
-    </div>
-    """
-    eco_html = ""
     body = f"""
     {login_cta}
     {trial_html}
-    <div id="plans"></div>
-    <h2>Тарифы</h2>
-    {plans_html or "<p>Тарифы не настроены.</p>"}
-    {apps_html}
+    <div class="card">
+      <h3>🛒 Тарифы</h3>
+      <p>Подписка на стабильный доступ без VPN — для Android, iOS и Windows.</p>
+      <a href="/plans" class="btn">Выбрать тариф →</a>
+    </div>
+    {_apps_card_html(win_url)}
     """
     return web.Response(text=_page("Главная", body, session, active="Главная"), content_type="text/html")
+
+
+async def handle_plans(request: web.Request) -> web.Response:
+    """Страница «Тарифы» — отдельная, как вкладка в Mini App (не якорь на главной)."""
+    from plans import DEVICE_ADDONS
+    session = _get_session(request)
+    plans = await list_plans() or list(PLANS)
+    win_url = await get_app_windows_url()
+    addons_html = ""
+    if DEVICE_ADDONS:
+        addons_html = ('<h2 class="addons-title">Больше устройств</h2>'
+                       + _plans_grid_html(DEVICE_ADDONS))
+    body = f"""
+    {_plans_grid_html(plans) or "<p>Тарифы не настроены.</p>"}
+    {addons_html}
+    {_apps_card_html(win_url)}
+    <div class="card"><p class="note" style="margin:0">Оплата: ЮKassa (карта/СБП). После оплаты доступ выдаётся автоматически. Лимит трафика есть только у пробного периода.</p></div>
+    """
+    return web.Response(
+        text=_page("Тарифы", body, session, active="Тарифы", subtitle="Выберите подходящий план"),
+        content_type="text/html",
+    )
 
 # ---------- регистрация / вход на сайт ----------
 
@@ -1572,6 +1602,7 @@ def make_app() -> web.Application:
     # статика сайта (CSS/JS)
     app.router.add_static("/static/", path=os.path.join(os.path.dirname(__file__), "static"), name="static")
     app.router.add_get("/", handle_index)
+    app.router.add_get("/plans", handle_plans)
     app.router.add_get("/register", handle_register_get)
     app.router.add_post("/register", handle_register_post)
     app.router.add_get("/login", handle_login_get)
