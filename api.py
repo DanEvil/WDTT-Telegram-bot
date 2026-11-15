@@ -906,8 +906,6 @@ async def h_instructions(request: web.Request) -> web.Response:
         })
     return web.json_response({
         "intro": instr.INTRO,
-        "clients": instr.CLIENTS,
-        "vk_hash_note": instr.VK_HASH_NOTE,
         "platforms": platforms,
     })
 

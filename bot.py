@@ -209,7 +209,6 @@ NAV_BUTTONS = {
 INSTRUCTION_INTRO = (
     "📖 <b>Подключение к WDTT</b>\n\n"
     "Выберите вашу платформу:\n\n"
-    + __import__("instructions").clients_text()
 )
 
 INSTRUCTION_ANDROID = (
