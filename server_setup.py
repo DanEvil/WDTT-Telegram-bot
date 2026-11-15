@@ -184,6 +184,9 @@ async def deploy_server(host: str, ssh_port: int, ssh_user: str, ssh_password: s
             vk_cookies = accounts[0]["cookies"]
 
     cfg = await configure_panel(host, vk_cookies=vk_cookies)
+    if cfg["base_url"].startswith("http://") and host not in ("127.0.0.1", "localhost"):
+        log.warning("ВНИМАНИЕ: панель %s добавлена по plain HTTP (%s) — логин/пароль панели "
+                    "передаются незащищённо. Настройте HTTPS или SSH-туннель.", host, cfg["base_url"])
     server_id = await add_server(
         name=name,
         base_url=cfg["base_url"],

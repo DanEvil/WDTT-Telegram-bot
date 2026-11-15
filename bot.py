@@ -39,6 +39,7 @@ from aiogram.types import (
 
 import config
 from db import (
+    add_identity,
     add_payment,
     add_referral,
     add_server,
@@ -58,6 +59,10 @@ from db import (
     get_expired_customers,
     get_payment,
     get_pending_payments,
+    start_fulfillment,
+    get_fulfillment,
+    finish_fulfillment,
+    reset_stale_fulfillments,
     get_plan,
     get_referrals_count,
     get_server,
@@ -380,11 +385,15 @@ def _panel_user_missing(exc: Exception) -> bool:
     return "not found" in msg or "не найден" in msg
 
 
-async def grant_access(telegram_id: int, username: str | None, plan: dict) -> tuple[WdttClient, str, int]:
+async def grant_access(telegram_id: int, username: str | None, plan: dict,
+                       expires_override: int | None = None) -> tuple[WdttClient, str, int]:
     """Создаёт или продлевает подписку. Возвращает (клиент панели, пароль, expires_at).
 
     Продление активной подписки продлевает тот же ключ с текущей даты окончания;
     если пользователь в панели потерялся — создаётся новый ключ.
+
+    expires_override (F07): явная целевая дата из журнала fulfillments —
+    при повторной выдаче того же платежа дата НЕ пересчитывается заново.
     """
     days = int(plan["days"])
     traffic = int(plan.get("traffic_gb") or 0)
@@ -419,7 +428,7 @@ async def grant_access(telegram_id: int, username: str | None, plan: dict) -> tu
         server_id = customer["server_id"] or await get_default_server_id()
         client = await get_client(server_id)
         base = max(now, int(customer["expires_at"] or 0))
-        expires = base + days * 86400
+        expires = int(expires_override) if expires_override else base + days * 86400
         pwd = customer["wdtt_password"]
         try:
             # панель пересобирает запись: vk_hash передаём сохранённый, иначе обнулится
@@ -461,7 +470,7 @@ async def grant_access(telegram_id: int, username: str | None, plan: dict) -> tu
                 "Администратор уже уведомлён — добавьте новый сервер."
             )
         client = await get_client(server_id)
-        expires = now + days * 86400
+        expires = int(expires_override) if expires_override else now + days * 86400
         pwd = await client.add_user(comment=_comment_for(telegram_id, username),
                                     expires_at=expires, total_gb=traffic, max_devices=devices,
                                     vk_hash=config.WDTT_VK_HASH)
@@ -1007,6 +1016,15 @@ async def _bind_site_code(message: Message, code: str) -> None:
         )
         return
     await mark_bind_code_used(code)
+    # F01: регистрируем идентичности привязанного аккаунта (без авто-склейки:
+    # add_identity вернёт False при конфликте — тогда нужен ручной разбор)
+    fu = message.from_user
+    tg_id0 = int(fu.id) if fu else 0
+    if tg_id0 and not await add_identity("telegram", str(tg_id0), tg_id0):
+        log.warning("F01: telegram %s уже привязан к другому аккаунту", tg_id0)
+    su_email = (site_user.get("email") or "").strip().lower()
+    if su_email and tg_id0 and not await add_identity("email", su_email, tg_id0):
+        log.warning("F01: email %s уже привязан к другому аккаунту (bind tg %s)", su_email, tg_id0)
     # фиксируем пользователя Telegram в базе (customers), чтобы подписка
     # была привязана и работала выдача/продление через бота
     tg_id = message.from_user.id
@@ -1507,13 +1525,21 @@ async def fulfill_payment(payment_id: str) -> None:
 
         telegram_id = int(row["telegram_id"])
 
-        # сохраняем способ оплаты для автопродления (ЮKassa вернёт payment_method_id после оплаты картой)
-        pm_id = yk.get("payment_method_id")
+        # сохраняем способ оплаты для автопродления: ЮKassa кладёт его в
+        # вложенный объект payment_method {id, saved}; сохраняем ТОЛЬКО если
+        # карта реально сохранена (saved=true) — иначе автопродление не сработает
+        pm_raw = yk.get("payment_method")
+        pm: dict = pm_raw if isinstance(pm_raw, dict) else {}
+        pm_id = pm.get("id") if pm.get("saved") else None
+        if not pm_id:
+            pm_id = yk.get("payment_method_id") if yk.get("saved") else None
         if pm_id:
             try:
                 await set_payment_method(telegram_id, str(pm_id))
             except Exception as e:
                 log.warning("не удалось сохранить payment_method_id для tg %s: %s", telegram_id, e)
+        else:
+            log.info("платёж %s: способ оплаты не сохранён (saved != true) — автопродление недоступно", payment_id)
 
         plan = await get_plan(row["plan_id"]) or ALL_PLANS_BY_ID.get(row["plan_id"])
         if not plan:
@@ -1529,11 +1555,33 @@ async def fulfill_payment(payment_id: str) -> None:
             log.info("платёж %s уже выдан (по сроку в панели) — пропускаем", payment_id)
             if row["status"] != "fulfilled":
                 await set_payment_status(payment_id, "fulfilled")
+            await finish_fulfillment(payment_id, True)
             return
 
+        # F05/F07: фиксируем выдачу в персистентном журнале ДО обращения к панели.
+        # При падении/restart poller повторит ровно с той же target_expires.
+        cust0 = await get_customer(telegram_id)
+        base0 = max(int(time.time()), int((cust0 or {}).get("expires_at") or 0))
+        target = base0 + int(plan["days"]) * 86400
+        frow = await start_fulfillment(payment_id, telegram_id, row["plan_id"], target)
+        if frow is None:
+            log.error("не удалось зарезервировать выдачу для %s", payment_id)
+            return
+        if int(frow["target_expires"]) != target:
+            log.warning("платёж %s: целевая дата в журнале %s отличается от текущей %s — применяем journal",
+                        payment_id, frow["target_expires"], target)
+        if frow["status"] == "applied":
+            log.info("платёж %s уже применён (журнал) — только помечаем fulfilled", payment_id)
+            if row["status"] != "fulfilled":
+                await set_payment_status(payment_id, "fulfilled")
+            return
+        target = int(frow["target_expires"])
+
         try:
-            client, pwd, expires = await grant_access(telegram_id, row.get("username"), plan)
+            client, pwd, expires = await grant_access(telegram_id, row.get("username"), plan,
+                                                       expires_override=target)
         except Exception as e:
+            await finish_fulfillment(payment_id, False)
             log.exception("ошибка выдачи доступа по платёж %s", payment_id)
             await notify_admin(
                 f"🚨 <b>Ошибка выдачи доступа</b>\nПлатёж: <code>{payment_id}</code>\n"
@@ -1542,6 +1590,7 @@ async def fulfill_payment(payment_id: str) -> None:
             )
             return
 
+        await finish_fulfillment(payment_id, True)
         await set_payment_status(payment_id, "fulfilled")
 
         # метрики
@@ -1995,7 +2044,14 @@ async def process_add_server_url(message: Message, state: FSMContext) -> None:
         return
     base_url = (message.text or "").strip()
     if not base_url.startswith(("http://", "https://")):
-        await message.answer("base_url должен начинаться с https:// (или http:// для теста). Попробуйте ещё раз.")
+        await message.answer("base_url должен начинаться с https:// (или http:// для локального теста). Попробуйте ещё раз.")
+        return
+    # F15: пароли панели нельзя гонять по plain HTTP — http разрешаем только для localhost
+    from urllib.parse import urlparse as _up
+    _host = (_up(base_url).hostname or "").lower()
+    if base_url.startswith("http://") and _host not in ("127.0.0.1", "localhost", "::1"):
+        await message.answer("⚠️ http:// разрешён только для локальной панели (127.0.0.1/localhost). "
+                             "Укажите https:// — иначе логин и пароль уйдут по незащищённому каналу.")
         return
     await state.update_data(base_url=base_url)
     await state.set_state(AdminStates.add_server_login)
@@ -3005,6 +3061,13 @@ async def main() -> None:
         raise SystemExit("Ошибка конфигурации:\n- " + "\n- ".join(errors))
 
     await init_db()
+    # F05: восстанавливаем выдачи, упавшие между резервированием и применением
+    try:
+        n = await reset_stale_fulfillments()
+        if n:
+            log.info("восстановлено stale-выдач после рестарта: %s", n)
+    except Exception:
+        log.exception("reset_stale_fulfillments")
     await seed_default_server()
     await seed_default_plans()
 

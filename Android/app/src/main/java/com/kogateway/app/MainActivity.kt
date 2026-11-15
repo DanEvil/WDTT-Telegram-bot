@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.content.pm.PackageManager
 import android.view.ViewGroup
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -90,20 +91,31 @@ class MainActivity : AppCompatActivity() {
         intent.data?.let { handleLinkUri(it) }
     }
 
-    /** wdtt:// / qwdtt:// — во внешний клиент, иначе в буфер обмена. */
+    /** wdtt:// / qwdtt:// — во внешний клиент, иначе в буфер обмена.
+     *  F03: собственный пакет исключается, чтобы не было self-dispatch-цикла. */
     private fun handleLinkUri(uri: Uri): Boolean {
         val scheme = uri.scheme?.lowercase() ?: return false
         if (scheme != "wdtt" && scheme != "qwdtt") return false
+        val pm = packageManager
         val intent = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        return if (intent.resolveActivity(packageManager) != null) {
-            startActivity(intent)
-            true
-        } else {
-            val clip = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            clip.setPrimaryClip(ClipData.newPlainText("subscription link", uri.toString()))
-            Toast.makeText(this, "Ссылка скопирована — вставьте её в клиенте WDTT", Toast.LENGTH_LONG).show()
-            true
+        // ищем все обработчики схемы, кроме собственного пакета
+        val external = pm.queryIntentActivities(intent, PackageManager.MATCH_ALL)
+            .filter { it.activityInfo.packageName != packageName }
+        if (external.isNotEmpty()) {
+            val fwd = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            fwd.setPackage(external.first().activityInfo.packageName)
+            return try {
+                startActivity(fwd)
+                true
+            } catch (e: Exception) {
+                false
+            }
         }
+        // внешнего клиента нет — в буфер обмена
+        val clip = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clip.setPrimaryClip(ClipData.newPlainText("subscription link", uri.toString()))
+        Toast.makeText(this, "Ссылка скопирована — вставьте её в клиенте WDTT", Toast.LENGTH_LONG).show()
+        return true
     }
 
     private inner class AppWebViewClient : WebViewClient() {

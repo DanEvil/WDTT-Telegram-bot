@@ -61,6 +61,18 @@ async def init_db() -> None:
                 paid_at     INTEGER
             );
 
+            -- F05/F07: персистентный журнал выдачи — один платёж = одна выдача
+            -- с фиксированной целевой датой (target_expires), переживает рестарт
+            CREATE TABLE IF NOT EXISTS fulfillments (
+                payment_id     TEXT PRIMARY KEY,
+                telegram_id    INTEGER NOT NULL,
+                plan_id        TEXT NOT NULL,
+                target_expires INTEGER NOT NULL,   -- к какому сроку применяем платёж
+                status         TEXT NOT NULL DEFAULT 'processing',  -- processing | applied | failed
+                created_at     INTEGER NOT NULL,
+                applied_at     INTEGER
+            );
+
             CREATE TABLE IF NOT EXISTS trials (
                 telegram_id INTEGER PRIMARY KEY,
                 used_at     INTEGER NOT NULL
@@ -72,6 +84,14 @@ async def init_db() -> None:
                 created_at   INTEGER NOT NULL,
                 rewarded     INTEGER NOT NULL DEFAULT 0,
                 rewarded_at  INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS identities (
+                provider   TEXT NOT NULL,          -- 'telegram' | 'email' | 'site'
+                subject    TEXT NOT NULL,          -- telegram_id / email / site_user_id
+                user_id    INTEGER NOT NULL,       -- канонический id (customers.telegram_id)
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (provider, subject)    -- F01: одна идентичность — один аккаунт
             );
 
             CREATE TABLE IF NOT EXISTS servers (
@@ -129,6 +149,9 @@ async def init_db() -> None:
             await db.execute("ALTER TABLE customers ADD COLUMN renew_charge_at INTEGER NOT NULL DEFAULT 0")
         if "renew_charge_payment_id" not in cols:
             await db.execute("ALTER TABLE customers ADD COLUMN renew_charge_payment_id TEXT")
+        # Миграция: email владельца аккаунта (F01: detecting hash-collision merges)
+        if "email" not in cols:
+            await db.execute("ALTER TABLE customers ADD COLUMN email TEXT")
 
         # Миграции таблицы servers: SSH-доступ для автоустановки панели
         scols = [r["name"] for r in (await (await db.execute("PRAGMA table_info(servers)")).fetchall())]
@@ -164,6 +187,7 @@ async def init_db() -> None:
         )
         await db.execute("CREATE INDEX IF NOT EXISTS idx_vk_issued_server ON vk_issued(server_id, vk_account_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_vk_issued_user ON vk_issued(user_password)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_identities_user ON identities(user_id)")
 
         # Индексы для быстрого поиска (sync_panel_worker, sub_id lookups)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_customers_wdtt_password ON customers(wdtt_password)")
@@ -301,6 +325,52 @@ async def set_payment_status(payment_id: str, status: str, paid_at: int | None =
         )
 
 
+# ---------- журнал выдачи (fulfillments): F05/F07 ----------
+
+async def start_fulfillment(payment_id: str, telegram_id: int, plan_id: str,
+                            target_expires: int) -> dict | None:
+    """Атомарно резервирует выдачу за платёж (INSERT OR IGNORE) — повторный вызов
+    вернёт ту же запись с ИСХОДНЫМ target_expires (дни не прибавятся дважды).
+    """
+    async with conn() as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO fulfillments (payment_id, telegram_id, plan_id, target_expires, status, created_at) "
+            "VALUES (?, ?, ?, ?, 'processing', ?)",
+            (payment_id, int(telegram_id), plan_id, int(target_expires), int(time.time())),
+        )
+        row = await (await db.execute(
+            "SELECT * FROM fulfillments WHERE payment_id = ?", (payment_id,)
+        )).fetchone()
+        return dict(row) if row else None
+
+
+async def get_fulfillment(payment_id: str) -> dict | None:
+    async with conn() as db:
+        row = await (await db.execute(
+            "SELECT * FROM fulfillments WHERE payment_id = ?", (payment_id,)
+        )).fetchone()
+        return dict(row) if row else None
+
+
+async def finish_fulfillment(payment_id: str, ok: bool) -> None:
+    async with conn() as db:
+        await db.execute(
+            "UPDATE fulfillments SET status = ?, applied_at = ? WHERE payment_id = ?",
+            ("applied" if ok else "failed", int(time.time()), payment_id),
+        )
+
+
+async def reset_stale_fulfillments() -> int:
+    """При старте: 'processing' записи — это падение между резервированием и
+    применением. Сбрасываем в 'pending', чтобы poller применил их ровно один раз.
+    """
+    async with conn() as db:
+        cur = await db.execute(
+            "UPDATE fulfillments SET status = 'pending' WHERE status = 'processing'"
+        )
+        return cur.rowcount or 0
+
+
 async def get_pending_payments(max_age_days: int = 7) -> list[dict]:
     """Неоплаченные ('pending') и оплаченные, но не выданные ('paid') платежи.
 
@@ -328,6 +398,72 @@ async def get_customer(telegram_id: int) -> dict | None:
         cur = await db.execute("SELECT * FROM customers WHERE telegram_id = ?", (telegram_id,))
         row = await cur.fetchone()
         return dict(row) if row else None
+
+
+# ---------- identities: (provider, subject) -> user_id (F01) ----------
+
+async def get_identity(provider: str, subject: str) -> dict | None:
+    """Запись identities по (provider, subject) или None."""
+    async with conn() as db:
+        row = await (await db.execute(
+            "SELECT * FROM identities WHERE provider = ? AND subject = ?",
+            (provider, subject),
+        )).fetchone()
+        return dict(row) if row else None
+
+
+async def add_identity(provider: str, subject: str, user_id: int) -> bool:
+    """Привязывает идентичность к user_id.
+
+    Возвращает False, если (provider, subject) уже привязан к ДРУГОМУ
+    user_id — тогда склейка аккаунтов НЕ выполняется автоматически (F01),
+    нужен ручной разбор. При совпадении user_id — True (идемпотентно).
+    """
+    async with conn() as db:
+        row = await (await db.execute(
+            "SELECT user_id FROM identities WHERE provider = ? AND subject = ?",
+            (provider, subject),
+        )).fetchone()
+        if row:
+            return int(row["user_id"]) == int(user_id)
+        await db.execute(
+            "INSERT INTO identities (provider, subject, user_id, created_at) VALUES (?, ?, ?, ?)",
+            (provider, subject, int(user_id), int(time.time())),
+        )
+        return True
+
+
+async def list_identities(user_id: int) -> list[dict]:
+    async with conn() as db:
+        rows = await (await db.execute(
+            "SELECT provider, subject, created_at FROM identities WHERE user_id = ? ORDER BY created_at",
+            (int(user_id),),
+        )).fetchall()
+        return [dict(r) for r in rows]
+
+
+async def set_customer_email(telegram_id: int, email: str) -> bool:
+    """Записывает email в customers.
+
+    False, если за этим telegram_id уже закреплён ДРУГОЙ email —
+    это коллизия хеш-uid (F01), аккаунты не склеиваем, нужен ручной разбор.
+    """
+    email = (email or "").strip().lower()
+    async with conn() as db:
+        row = await (await db.execute(
+            "SELECT email FROM customers WHERE telegram_id = ?", (telegram_id,)
+        )).fetchone()
+        if row is None:
+            await db.execute(
+                "INSERT OR IGNORE INTO customers (telegram_id, email, expires_at, created_at) VALUES (?, ?, 0, ?)",
+                (telegram_id, email, int(time.time())),
+            )
+            return True
+        cur_email = (row["email"] or "").strip().lower()
+        if cur_email and cur_email != email:
+            return False
+        await db.execute("UPDATE customers SET email = ? WHERE telegram_id = ?", (email, telegram_id))
+        return True
 
 
 async def upsert_customer(telegram_id: int, wdtt_password: str, expires_at: int,

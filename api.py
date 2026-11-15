@@ -17,14 +17,17 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
 import smtplib
+import socket
 import time
+from collections import defaultdict, deque
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from urllib.parse import parse_qsl, unquote
+from urllib.parse import parse_qsl, unquote, urlparse
 
 from aiohttp import web
 
@@ -329,6 +332,13 @@ async def h_auth(request: web.Request) -> web.Response:
             status=401,
         )
     uid = int(user["id"])
+    # F01: регистрируем идентичность telegram -> uid (UNIQUE(provider, subject))
+    try:
+        from db import add_identity, init_db
+        await init_db()
+        await add_identity("telegram", str(uid), uid)
+    except Exception:
+        log.exception("auth: не удалось записать identity telegram для %s", uid)
     return web.json_response({
         "token": make_session(uid, config.TELEGRAM_TOKEN),
         "user": {"id": uid, "first_name": user.get("first_name", ""), "username": user.get("username", "")},
@@ -339,9 +349,16 @@ async def h_auth(request: web.Request) -> web.Response:
 
 # ---------- коды подтверждения email (в памяти, живут 15 минут) ----------
 
-_email_codes: dict[str, dict] = {}  # email -> {code, expires_at}
+_email_codes: dict[str, dict] = {}  # email -> {code, expires_at, attempts}
+
+# Rate-limit отправки кодов: email -> очередь времён отправки (max 5 в час)
+_email_send_times: dict[str, deque] = defaultdict(deque)
+# Rate-limit попыток подбора кода: email -> очередь времён (max 10 в час)
+_email_verify_times: dict[str, deque] = defaultdict(deque)
 
 EMAIL_CODE_TTL = 900  # 15 минут
+EMAIL_SEND_MAX_PER_HOUR = 5
+EMAIL_VERIFY_MAX_PER_HOUR = 10
 
 # Диапазон uid для email-аккаунтов: 10^9..2*10^9.
 # Настоящие telegram_id меньше 10^9, поэтому пересечения с ними нет.
@@ -390,8 +407,11 @@ def _send_email_code(to_email: str, code: str) -> bool:
             return True
         except Exception:
             log.exception("SMTP send failed")
-    # fallback: код в лог
-    log.info(f"EMAIL CODE for {to_email}: {code}")
+    # fallback: код в лог — ТОЛЬКО в явном debug-режиме, иначе OTP в логах
+    if os.getenv("DEBUG_EMAIL_CODE") == "1":
+        log.info(f"EMAIL CODE for {to_email}: {code}")
+    else:
+        log.info(f"EMAIL CODE отправлен на {to_email}")
     return True
 
 async def h_email_send_code(request: web.Request) -> web.Response:
@@ -403,10 +423,19 @@ async def h_email_send_code(request: web.Request) -> web.Response:
     email = str(body.get("email") or "").strip().lower()
     if not email or "@" not in email:
         return web.json_response({"error": "Укажите email"}, status=400)
+    # rate-limit: не более EMAIL_SEND_MAX_PER_HOUR отправок кода на один email в час
+    now = time.time()
+    sends = _email_send_times[email]
+    while sends and now - sends[0] > 3600:
+        sends.popleft()
+    if len(sends) >= EMAIL_SEND_MAX_PER_HOUR:
+        return web.json_response({"error": "Слишком много запросов кода. Подождите час."}, status=429)
+    sends.append(now)
     code = _generate_email_code()
     _email_codes[email] = {
         "code": code,
-        "expires_at": time.time() + EMAIL_CODE_TTL,
+        "expires_at": now + EMAIL_CODE_TTL,
+        "attempts": 0,
     }
     if _send_email_code(email, code):
         return web.json_response({"ok": True, "email": email})
@@ -422,25 +451,159 @@ async def h_email_verify(request: web.Request) -> web.Response:
     code = str(body.get("code") or "").strip()
     if not email or not code:
         return web.json_response({"error": "Укажите email и код"}, status=400)
+    # rate-limit: не более EMAIL_VERIFY_MAX_PER_HOUR попыток подбора в час
+    now = time.time()
+    attempts_log = _email_verify_times[email]
+    while attempts_log and now - attempts_log[0] > 3600:
+        attempts_log.popleft()
+    if len(attempts_log) >= EMAIL_VERIFY_MAX_PER_HOUR:
+        _email_codes.pop(email, None)
+        return web.json_response({"error": "Слишком много попыток. Запросите новый код."}, status=429)
+    attempts_log.append(now)
     record = _email_codes.get(email)
     if not record:
         return web.json_response({"error": "Код не найден. Запросите код повторно."}, status=400)
     if time.time() > record["expires_at"]:
         del _email_codes[email]
         return web.json_response({"error": "Код истёк. Запросите новый."}, status=400)
+    record["attempts"] = int(record.get("attempts") or 0) + 1
     if record["code"] != code:
+        if record["attempts"] >= 5:
+            del _email_codes[email]  # код скомпрометирован/брутфорс — удаляем
+            return web.json_response({"error": "Слишком много неверных попыток. Запросите новый код."}, status=429)
         return web.json_response({"error": "Неверный код."}, status=400)
     # код верный — создаём пользователя/сессию
-    # uid из email должен быть СТАБИЛЬНЫМ между перезапусками сервера,
-    # иначе после рестарта пользователь получит другой id и потеряет
-    # подписку/пробный период (hash() рандомизируется per-process).
-    uid = email_uid(email)
+    # F01: сначала смотрим в identities — email мог быть привязан к другому uid;
+    # если нет — вычисляем uid как раньше, но проверяем, что этот uid не занят
+    # другим email (иначе это хеш-коллизия — аккаунты НЕ склеиваем автоматически)
+    from db import add_identity, get_identity, init_db, set_customer_email
+    await init_db()
+    ident = await get_identity("email", email)
+    if ident:
+        uid = int(ident["user_id"])
+    else:
+        uid = email_uid(email)
+        if not await set_customer_email(uid, email):
+            log.warning("F01: коллизия — uid %s (email %s) уже привязан к другому email; "
+                        "склейка отклонена, нужен ручной разбор", uid, email)
+            del _email_codes[email]
+            return web.json_response(
+                {"error": "Конфликт аккаунтов: этот адрес привязан к другому профилю. "
+                          "Обратитесь к администратору."}, status=409)
+        await add_identity("email", email, uid)
     del _email_codes[email]
     return web.json_response({
         "token": make_session(uid, config.TELEGRAM_TOKEN),
         "user": {"id": uid, "email": email, "first_name": email.split("@")[0]},
         "is_admin": is_admin_uid(uid),
         "stars_enabled": False,
+        "ecosystem": ecosystem_payload(await app_windows_url_effective()),
+    })
+
+
+async def h_auth_bind_telegram(request: web.Request) -> web.Response:
+    """POST /api/v1/auth/bind-telegram {code} — вход в нативном приложении по коду привязки.
+
+    Код создаётся на сайте (раздел «Привязка Telegram») для аккаунта сайта.
+    Приложение отправляет код — получает сессию этого аккаунта: под telegram_id,
+    если он уже привязан, иначе под site-uid (-abs(id)), как и при оплате с сайта.
+    Код одноразовым не делаем: он также используется для привязки через бота.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+    code = str(body.get("code") or "").strip()
+    if not code:
+        return web.json_response({"error": "missing code"}, status=400)
+    from db import get_bind_code, get_site_user_by_id, init_db
+    await init_db()
+    bind_row = await get_bind_code(code)
+    if not bind_row:
+        return web.json_response({"error": "Код не найден или уже использован"}, status=400)
+    site_user = await get_site_user_by_id(bind_row["site_user_id"])
+    if not site_user:
+        return web.json_response({"error": "Аккаунт не найден"}, status=400)
+    tg = site_user.get("telegram_id")
+    uid = int(tg) if tg else -abs(int(site_user["id"]))
+    # F01: регистрируем идентичности аккаунта (конфликт — не склеиваем, логируем)
+    try:
+        from db import add_identity
+        if tg and not await add_identity("telegram", str(int(tg)), uid):
+            log.warning("F01: telegram %s уже привязан к другому аккаунту (bind code)", tg)
+        su_email = (site_user.get("email") or "").strip().lower()
+        if su_email and not await add_identity("email", su_email, uid):
+            log.warning("F01: email %s уже привязан к другому аккаунту (bind code)", su_email)
+    except Exception:
+        log.exception("bind-telegram: не удалось записать identities для uid %s", uid)
+    return web.json_response({
+        "ok": True,
+        "token": make_session(uid, config.TELEGRAM_TOKEN),
+        "user": {"id": uid, "email": site_user.get("email", "")},
+        "is_admin": is_admin_uid(uid),
+        "ecosystem": ecosystem_payload(await app_windows_url_effective()),
+    })
+
+
+async def h_auth_login_request(request: web.Request) -> web.Response:
+    """POST /api/v1/auth/login-request -> {code, deep_link}.
+
+    F04: одноразовый код входа для нативного приложения. Приложение открывает
+    deep_link в Telegram (бот подтверждает код), затем опрашивает poll —
+    и получает сессионный токен. Долгоживущие токены в URL не используются.
+    """
+    import secrets
+    from db import create_login_request, init_db
+    await init_db()
+    code = secrets.token_urlsafe(12)
+    await create_login_request(code)
+    return web.json_response({
+        "ok": True,
+        "code": code,
+        "deep_link": bot_url(f"web_login_{code}"),
+        "ttl": 300,
+    })
+
+
+# rate-limit poll'а кодов входа: code -> очередь времён (max 60 за 5 минут)
+_login_poll_times: dict[str, deque] = defaultdict(deque)
+
+
+async def h_auth_login_request_poll(request: web.Request) -> web.Response:
+    """POST /api/v1/auth/login-request/poll {code} -> {pending: true} | {token, user, ...}.
+
+    Одноразовый обмен: как только бот подтвердил код, выдаём токен и помечаем
+    код использованным — повторный poll тем же кодом вернёт ошибку.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
+    code = str(body.get("code") or "").strip()
+    if not code:
+        return web.json_response({"error": "missing code"}, status=400)
+    now = time.time()
+    polls = _login_poll_times[code]
+    while polls and now - polls[0] > 300:
+        polls.popleft()
+    if len(polls) >= 60:
+        return web.json_response({"error": "too many polls"}, status=429)
+    polls.append(now)
+    from db import add_identity, get_login_request, init_db, mark_login_request_used
+    await init_db()
+    row = await get_login_request(code)
+    if not row or row.get("used"):
+        return web.json_response({"error": "Код не найден или уже использован"}, status=400)
+    if not row.get("telegram_id"):
+        return web.json_response({"pending": True})
+    await mark_login_request_used(code)
+    uid = int(row["telegram_id"])
+    await add_identity("telegram", str(uid), uid)
+    return web.json_response({
+        "ok": True,
+        "token": make_session(uid, config.TELEGRAM_TOKEN),
+        "user": {"id": uid, "username": row.get("username") or ""},
+        "is_admin": is_admin_uid(uid),
         "ecosystem": ecosystem_payload(await app_windows_url_effective()),
     })
 
@@ -537,8 +700,55 @@ async def h_block_methods(request: web.Request) -> web.Response:
     })
 
 
+# Rate-limit диагностики: uid -> очередь времён (max 10 запросов в минуту)
+_diagnose_times: dict[int, deque] = defaultdict(deque)
+
+
+def _url_host_is_public(url: str) -> tuple[bool, str]:
+    """True, если host из url резолвится только в публичные IP (anti-SSRF)."""
+    try:
+        p = urlparse(url)
+    except Exception:
+        return False, "bad url"
+    if p.scheme not in ("http", "https"):
+        return False, "scheme must be http/https"
+    host = (p.hostname or "").strip().lower()
+    if not host:
+        return False, "missing host"
+    if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
+        return False, "local host not allowed"
+    try:
+        ipaddress.ip_address(host)
+        addrs = [host]  # literal IP
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        except OSError as e:
+            return False, f"dns: {e}"
+        addrs = sorted({i[4][0] for i in infos})
+    for a in addrs:
+        ip = ipaddress.ip_address(a)
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
+                or ip.is_reserved or ip.is_unspecified):
+            return False, f"target resolves to non-public IP ({a})"
+    return True, host
+
+
 async def h_block_diagnose(request: web.Request) -> web.Response:
-    """POST /api/v1/block-diagnose — определить технику блокировки для сайта."""
+    """POST /api/v1/block-diagnose — определить технику блокировки для сайта.
+
+    Требует авторизации (Bearer). Цель должна резолвиться в публичный IP —
+    защита от SSRF (нельзя дёргать внутренние адреса/метаданные облаков).
+    """
+    uid = user_id_from_request(request)  # 401 без валидного токена
+    # rate-limit на пользователя
+    now = time.time()
+    times = _diagnose_times[uid]
+    while times and now - times[0] > 60:
+        times.popleft()
+    if len(times) >= 10:
+        return web.json_response({"error": "too many requests"}, status=429)
+    times.append(now)
     try:
         body = await request.json()
     except Exception:
@@ -548,6 +758,10 @@ async def h_block_diagnose(request: web.Request) -> web.Response:
         return web.json_response({"error": "missing url"}, status=400)
     if "://" not in url:
         url = "https://" + url
+    ok, host = _url_host_is_public(url)
+    if not ok:
+        log.warning("block-diagnose: отклонён URL от uid %s: %s (%s)", uid, url, host)
+        return web.json_response({"error": f"target not allowed: {host}"}, status=400)
     try:
         import block_methods as bm
     except ImportError:
@@ -993,6 +1207,9 @@ async def h_admin_settings_post(request: web.Request) -> web.Response:
 def register_v1_routes(app: web.Application, prefix: str = "/api/v1") -> None:
     """Монтирует единый API экосистемы в aiohttp-приложение (сайт или мини-апп)."""
     app.router.add_post(f"{prefix}/auth", h_auth)
+    app.router.add_post(f"{prefix}/auth/bind-telegram", h_auth_bind_telegram)
+    app.router.add_post(f"{prefix}/auth/login-request", h_auth_login_request)
+    app.router.add_post(f"{prefix}/auth/login-request/poll", h_auth_login_request_poll)
     app.router.add_post(f"{prefix}/auth/email/send-code", h_email_send_code)
     app.router.add_post(f"{prefix}/auth/email/verify", h_email_verify)
     app.router.add_post(f"{prefix}/claim-trial", h_claim_trial)

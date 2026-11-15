@@ -1,10 +1,12 @@
 import json
 import os
+import re
 import socket
 import threading
 import webbrowser
 import urllib.request
 import urllib.parse
+from urllib.parse import urlparse
 import ipaddress
 import subprocess
 import ctypes
@@ -257,6 +259,39 @@ class Subscription:
 
 
 class DirectRoutesManager:
+    # F13: строгая валидация всего, что попадает в системные маршруты
+    _DOMAIN_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+    _APP_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.exe$", re.IGNORECASE)
+
+    @classmethod
+    def valid_domain(cls, value: str) -> bool:
+        v = value.strip().lower()
+        if v.startswith("*."):
+            v = v[2:]
+        return bool(cls._DOMAIN_RE.match(v))
+
+    @classmethod
+    def valid_net(cls, value: str) -> bool:
+        try:
+            ipaddress.ip_network(value.strip(), strict=False)
+            return True
+        except ValueError:
+            return False
+
+    @classmethod
+    def valid_app(cls, value: str) -> bool:
+        return bool(cls._APP_RE.match(value.strip()))
+
+    @classmethod
+    def valid_entry(cls, kind: str, value: str) -> bool:
+        if kind == "domains":
+            return cls.valid_domain(value)
+        if kind == "ips":
+            return cls.valid_net(value)
+        if kind == "apps":
+            return cls.valid_app(value)
+        return False
+
     def __init__(self, config: dict):
         self.cfg = config.setdefault("direct_routes", {})
         self.tcfg = config.setdefault("tunnel_routes", {})
@@ -270,8 +305,10 @@ class DirectRoutesManager:
         return bool(self.cfg.get("enabled"))
 
     def direct_add(self, kind: str, value: str):
+        if not self.valid_entry(kind, value):
+            return  # F13: невалидные записи не попадают в списки/маршруты
         arr = self.cfg.get(kind, [])
-        value = value.strip()
+        value = value.strip().lower() if kind != "apps" else value.strip()
         if value and value not in arr:
             arr.append(value)
 
@@ -284,8 +321,10 @@ class DirectRoutesManager:
         return bool(self.tcfg.get("enabled"))
 
     def tunnel_add(self, kind: str, value: str):
+        if not self.valid_entry(kind, value):
+            return
         arr = self.tcfg.get(kind, [])
-        value = value.strip()
+        value = value.strip().lower() if kind != "apps" else value.strip()
         if value and value not in arr:
             arr.append(value)
 
@@ -300,8 +339,13 @@ class DirectRoutesManager:
 
     def update_from_url(self, url: str | None = None) -> dict:
         url = url or self.cfg.get("url") or ""
-        stats = {"domains": 0, "ips": 0, "apps": 0, "errors": 0}
+        stats: dict = {"domains": 0, "ips": 0, "apps": 0, "rejected": 0, "errors": 0}
         if not url:
+            return stats
+        if not url.startswith("https://"):
+            # F13: списки маршрутов только по https
+            stats["errors"] = 1
+            stats["error"] = "URL списка должен быть https://"
             return stats
         try:
             with urllib.request.urlopen(url, timeout=20) as r:
@@ -310,22 +354,29 @@ class DirectRoutesManager:
             domains, ips, apps = [], [], []
             for ln in lines_l:
                 if ln.startswith("app:"):
-                    apps.append(ln[4:].strip())
+                    candidate, kind = ln[4:].strip(), "apps"
                 elif "/" in ln and any(c.isdigit() for c in ln.split("/")[0]):
-                    try:
-                        ipaddress.ip_network(ln, strict=False)
-                        ips.append(ln)
-                    except ValueError:
-                        domains.append(ln)
+                    candidate, kind = ln, "ips"
                 else:
-                    domains.append(ln)
+                    candidate, kind = ln, "domains"
+                # F13: каждая строка из внешнего списка проходит валидацию
+                if not self.valid_entry(kind, candidate):
+                    stats["rejected"] += 1
+                    continue
+                if kind == "apps":
+                    apps.append(candidate)
+                elif kind == "ips":
+                    ips.append(candidate)
+                else:
+                    domains.append(candidate.lower())
             self.cfg["domains"] = sorted(set(self.cfg.get("domains", []) + domains))
             self.cfg["ips"] = sorted(set(self.cfg.get("ips", []) + ips))
             self.cfg["apps"] = sorted(set(self.cfg.get("apps", []) + apps))
             self.cfg["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-            stats = {"domains": len(domains), "ips": len(ips), "apps": len(apps)}
+            stats = {"domains": len(domains), "ips": len(ips), "apps": len(apps),
+                     "rejected": stats["rejected"], "errors": 0}
         except Exception as e:
-            stats = {"domains": 0, "ips": 0, "apps": 0, "errors": 1, "error": str(e)}
+            stats = {"domains": 0, "ips": 0, "apps": 0, "rejected": 0, "errors": 1, "error": str(e)}
         return stats
 
     def is_admin(self) -> bool:
@@ -334,38 +385,115 @@ class DirectRoutesManager:
         except Exception:
             return False
 
-    def apply(self) -> tuple[bool, str]:
-        bat_path = os.path.join(os.path.dirname(CONFIG_PATH), "direct_routes.bat")
-        lines_bat = [
-            "@echo off",
-            "chcp 65001 >nul",
-            "echo Применяем исключения из туннеля K.O. Gateway",
-            "echo (запустите этот файл от имени администратора)",
-        ]
-        if self.cfg.get("enabled"):
-            lines_bat.append("echo --- Прямое подключение (обход VPN) ---")
-            for ip in self.cfg.get("ips", []):
-                lines_bat.append(f"route ADD {ip} MASK 255.255.255.255 0.0.0.0 IF * METRIC 1")
-            for dom in self.cfg.get("domains", []):
-                if "*" not in dom:
-                    lines_bat.append(f"echo 0.0.0.0 {dom} >> %WINDIR%/System32/drivers/etc/hosts")
-        if self.tcfg.get("enabled"):
-            lines_bat.append("echo --- Через туннель VPN ---")
-            for ip in self.tcfg.get("ips", []):
-                lines_bat.append(f"route ADD {ip} MASK 255.255.255.255 0.0.0.0 IF * METRIC 10")
-        lines_bat.append("echo Готово. Проверьте маршруты: route print")
-        lines_bat.append("pause")
-        with open(bat_path, "w", encoding="cp1251") as f:
-            f.write("\r\n".join(lines_bat))
+    def _route_cmd(self, args: list[str]) -> tuple[bool, str]:
+        """Вызов route.exe списком аргументов — без shell (F13: нет инъекции)."""
+        try:
+            r = subprocess.run(["route", *args], capture_output=True, text=True, timeout=15)
+            out = (r.stdout or "") + (r.stderr or "")
+            return r.returncode == 0, out.strip()
+        except Exception as e:
+            return False, str(e)
 
-        if self.is_admin():
+    def _add_net_route(self, net: str, metric: int) -> tuple[bool, str]:
+        n = ipaddress.ip_network(net.strip(), strict=False)
+        if n.prefixlen == 32:
+            return self._route_cmd(["add", str(n.network_address), "mask", "255.255.255.255",
+                                    "0.0.0.0", "metric", str(metric)])
+        return self._route_cmd(["add", str(n.network_address), "mask", str(n.netmask),
+                                "0.0.0.0", "metric", str(metric)])
+
+    def _del_net_route(self, net: str) -> tuple[bool, str]:
+        n = ipaddress.ip_network(net.strip(), strict=False)
+        return self._route_cmd(["delete", str(n.network_address)])
+
+    def _resolve_domain_ips(self, dom: str, limit: int = 16) -> list[str]:
+        """DNS-резолв домена в публичные IP для /32-маршрутов (вместо hosts, F13)."""
+        try:
+            infos = socket.getaddrinfo(dom, None, proto=socket.IPPROTO_TCP)
+        except OSError:
+            return []
+        ips = sorted({i[4][0] for i in infos})
+        out = []
+        for ip in ips:
             try:
-                subprocess.run(["cmd", "/c", bat_path], check=False, shell=True,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return True, f"Применено. Скрипт: {bat_path}"
-            except Exception as e:
-                return False, f"Ошибка применения: {e}"
-        return False, f"Требуются права администратора. Скрипт готов: {bat_path}"
+                if ipaddress.ip_address(ip).is_global:
+                    out.append(ip)
+            except ValueError:
+                continue
+            if len(out) >= limit:
+                break
+        return out
+
+    def _iter_net_entries(self, section: dict) -> list[tuple[str, str]]:
+        """(kind, value) валидных записей секции: IP/сети + DNS-resolve доменов."""
+        entries: list[tuple[str, str]] = []
+        for net in section.get("ips", []):
+            if self.valid_net(net):
+                entries.append(("net", net.strip()))
+        for dom in section.get("domains", []):
+            d = dom.strip().lower()
+            if d.startswith("*."):
+                d = d[2:]
+            if not self.valid_domain(d):
+                continue
+            for ip in self._resolve_domain_ips(d):
+                entries.append(("net", ip + "/32"))
+        return entries
+
+    def apply(self) -> tuple[bool, str]:
+        """Применяет маршруты напрямую через route.exe (без .bat, без shell, без hosts)."""
+        if not self.is_admin():
+            return False, "Требуются права администратора"
+        if not (self.cfg.get("enabled") or self.tcfg.get("enabled")):
+            return False, "Нечего применять — включите хотя бы один список"
+        applied, failed, skipped = 0, 0, 0
+        msgs: list[str] = []
+        for section, metric in ((self.cfg, 1), (self.tcfg, 10)):
+            if not section.get("enabled"):
+                continue
+            for net in section.get("ips", []):
+                if not self.valid_net(net):
+                    skipped += 1
+                    continue
+                ok, out = self._add_net_route(net, metric)
+                applied += int(ok)
+                failed += int(not ok)
+                if not ok:
+                    msgs.append(f"{net}: {out[:120]}")
+            for dom in section.get("domains", []):
+                d = dom.strip().lower()
+                if d.startswith("*."):
+                    d = d[2:]
+                if not self.valid_domain(d):
+                    skipped += 1
+                    continue
+                ips = self._resolve_domain_ips(d)
+                if not ips:
+                    skipped += 1
+                    msgs.append(f"{dom}: DNS не вернул публичных IP")
+                    continue
+                for ip in ips:
+                    ok, out = self._add_net_route(ip + "/32", metric)
+                    applied += int(ok)
+                    failed += int(not ok)
+                    if not ok:
+                        msgs.append(f"{ip}: {out[:120]}")
+        summary = (f"Маршрутов применено: {applied} · ошибок: {failed} · "
+                   f"пропущено (невалидно/нет DNS): {skipped}")
+        if msgs:
+            summary += "\n" + "\n".join(msgs[:10])
+        return failed == 0, summary
+
+    def clear(self) -> tuple[bool, str]:
+        """Удаляет добавленные маршруты (route delete). hosts не трогаем — мы его не пишем."""
+        if not self.is_admin():
+            return False, "Требуются права администратора"
+        removed = 0
+        for section in (self.cfg, self.tcfg):
+            for kind, net in self._iter_net_entries(section):
+                ok, _ = self._del_net_route(net)
+                removed += int(ok)
+        return True, f"Удалено маршрутов: {removed}"
 
 
 class SpeedDetector:
@@ -580,7 +708,7 @@ class LoginWindow:
             self.login_status_var.set("API URL не настроен в настройках")
             return
         try:
-            url = api_url + "/api/auth/bind-telegram"
+            url = api_url + "/api/v1/auth/bind-telegram"
             data = json.dumps({"code": code}).encode("utf-8")
             req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=15) as r:
@@ -617,7 +745,7 @@ class LoginWindow:
             self.login_status_var.set("API URL не настроен в настройках")
             return
         try:
-            url = api_url + "/api/auth/email/send-code"
+            url = api_url + "/api/v1/auth/email/send-code"
             data = json.dumps({"email": email}).encode("utf-8")
             req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=15) as r:
@@ -646,7 +774,7 @@ class LoginWindow:
             self.login_status_var.set("API URL не настроен в настройках")
             return
         try:
-            url = api_url + "/api/auth/email/verify"
+            url = api_url + "/api/v1/auth/email/verify"
             data = json.dumps({"email": email, "code": code}).encode("utf-8")
             req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=15) as r:
@@ -654,7 +782,7 @@ class LoginWindow:
         except Exception as e:
             self.login_status_var.set(f"Ошибка проверки: {e}")
             return
-        if resp.get("ok"):
+        if resp.get("token"):
             self.auth_token = resp.get("token", "")
             self.auth_user = resp.get("user", {})
             self.config["auth_token"] = self.auth_token
@@ -684,6 +812,7 @@ class GatewayApp:
         self.profiles = self.config.get("profiles", DEFAULT_CONFIG["profiles"])
         self.current_profile = None
         self.connected = False
+        self.vpn_verified = False
         self.connect_thread = None
         self.drm = DirectRoutesManager(self.config)
         self.conn_analyzer = CA.ConnectionAnalyzer(self.drm)
@@ -1207,6 +1336,7 @@ class GatewayApp:
         scheme = profile.get("scheme", "wdtt")
 
         self.connected = True
+        self.vpn_verified = False
         self.speed.connected = True
         self.connect_btn.config(text="Отключиться", bg="#374151")
         self.status_var.set("Подключение…")
@@ -1220,6 +1350,7 @@ class GatewayApp:
 
     def disconnect(self):
         self.connected = False
+        self.vpn_verified = False
         self.speed.connected = False
         if getattr(self, "openflux_proc", None):
             try:
@@ -1431,15 +1562,83 @@ class GatewayApp:
 
         self.root.after(0, lambda s=scheme, c=conn_str: self._log(f"Подключаюсь через {s.upper()}: {c}"))
 
-        self.root.after(0, lambda: self.status_var.set("Подключено"))
-        self.root.after(0, lambda: self.status_label.config(fg="#22C55E"))
-        self.root.after(0, lambda: self._log(f"Готово. Трафик идёт через {scheme.upper()}."))
+        if scheme == "openflux" and getattr(self, "openflux_proc", None):
+            # F02: «Подключено» выставляем ТОЛЬКО после контрольного запроса ЧЕРЕЗ туннель
+            if self._verify_tunnel_via_socks() and self.connected:
+                self.vpn_verified = True
+                self.root.after(0, lambda: self.status_var.set("Подключено"))
+                self.root.after(0, lambda: self.status_label.config(fg="#22C55E"))
+                self.root.after(0, lambda: self._log("Туннель подтверждён контрольным запросом. Трафик идёт через OPENFLUX."))
+            else:
+                self.connected = False
+                self.vpn_verified = False
+                self.root.after(0, lambda: self.status_var.set("Ошибка подключения"))
+                self.root.after(0, lambda: self.status_label.config(fg="#EF4444"))
+                self.root.after(0, lambda: self._log("Не удалось подтвердить туннель (нет ответа через локальный SOCKS5). «Подключено» НЕ выставлено."))
+        else:
+            # wdtt/aivpn: локального движка в приложении нет — отдаём ссылку
+            # внешнему зарегистрированному клиенту и честно говорим, что
+            # состояние туннеля проверить нельзя
+            handed = False
+            try:
+                os.startfile(conn_str)  # type: ignore[attr-defined]
+                handed = True
+            except Exception as e:
+                self.root.after(0, lambda e=e: self._log(
+                    f"Не удалось открыть внешний клиент по {conn_str} ({e}). Установите клиент WDTT."))
+            if handed and self.connected:
+                self.vpn_verified = False
+                self.root.after(0, lambda: self.status_var.set("Клиент открыт — статус VPN неизвестен"))
+                self.root.after(0, lambda: self.status_label.config(fg="#FBBF24"))
+                self.root.after(0, lambda: self._log(
+                    "Ссылка передана внешнему клиенту; у него нет API статуса — «Подключено» НЕ выставляется."))
+            else:
+                self.connected = False
+                self.vpn_verified = False
+                self.root.after(0, lambda: self.status_var.set("Не удалось подключиться"))
+                self.root.after(0, lambda: self.status_label.config(fg="#EF4444"))
 
         while self.connected:
             threading.Event().wait(1.0)
+            # мониторинг движка: если процесс туннеля умер — честный статус
+            proc = getattr(self, "openflux_proc", None)
+            if proc is not None and proc.poll() is not None:
+                self.connected = False
+                self.vpn_verified = False
+                self.root.after(0, lambda: self.status_var.set("Отключено (движок завершился)"))
+                self.root.after(0, lambda: self.status_label.config(fg="#EF4444"))
+                self.root.after(0, lambda: self._log("Процесс туннеля завершился — соединение потеряно."))
+                break
 
         self.root.after(0, lambda: self.status_var.set("Отключено"))
         self.root.after(0, lambda: self.status_label.config(fg="#E01E2B"))
+
+    def _verify_tunnel_via_socks(self, timeout: float = 20.0) -> bool:
+        """Контрольный HTTP-запрос ЧЕРЕЗ туннель (SOCKS5 127.0.0.1:1080).
+
+        True только если ответ получен реально через туннель. До этого
+        статус «Подключено» запрещён (F02).
+        """
+        if RL is None:
+            return False
+        import time as _time
+        check_urls = self.config.get("tunnel_check_urls") or [
+            "https://api.ipify.org", "https://www.cloudflare.com/cdn-cgi/trace",
+            "https://www.google.com/generate_204",
+        ]
+        deadline = _time.time() + timeout
+        while _time.time() < deadline and self.connected:
+            proc = getattr(self, "openflux_proc", None)
+            if proc is not None and proc.poll() is not None:
+                return False
+            for u in check_urls:
+                ok, ms, err = RL.measure_via_socks5(u, "127.0.0.1", 1080, timeout=6.0)
+                if ok:
+                    self.root.after(0, lambda m=ms, uu=u: self._log(
+                        f"Контрольный запрос через туннель ({uu}) OK — {m} мс"))
+                    return True
+            threading.Event().wait(1.0)
+        return False
 
     def _stream_openflux_output(self):
         """Читает stdout/stderr процесса OpenFlux и пишет в лог."""
@@ -2443,6 +2642,9 @@ class DirectRoutesWindow:
         tk.Button(apply_frame, text="Применить к системе", command=self._apply,
                   bg="#E01E2B", fg="#FFFFFF", relief="flat", cursor="hand2",
                   font=("Segoe UI", 10, "bold"), width=20).pack(side="left", padx=8)
+        tk.Button(apply_frame, text="Удалить маршруты", command=self._clear_routes,
+                  bg="#2F343E", fg="#FFFFFF", relief="flat", cursor="hand2",
+                  font=("Segoe UI", 9), width=16).pack(side="left", padx=4)
         tk.Label(apply_frame, text="(требуются права администратора)", fg="#9CA3AF", font=("Segoe UI", 9)).pack(side="left")
 
         self._refresh_lists()
@@ -2698,6 +2900,13 @@ class DirectRoutesWindow:
 
     def _apply(self):
         ok, msg = self.drm.apply()
+        if ok:
+            messagebox.showinfo("Исключения", msg)
+        else:
+            messagebox.showwarning("Исключения", msg)
+
+    def _clear_routes(self):
+        ok, msg = self.drm.clear()
         if ok:
             messagebox.showinfo("Исключения", msg)
         else:
