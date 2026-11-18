@@ -125,8 +125,10 @@ async def test_site_trial_issues_vk_hashes_via_bot_ensure(monkeypatch):
         return None
 
     monkeypatch.setattr(web_app, "init_db", _noop)
-    monkeypatch.setattr(web_app, "_require_site_session",
-                        lambda req: {"site_user_id": 5, "telegram_id": 4242, "username": "u"})
+    async def _require_session(req):
+        return {"site_user_id": 5, "telegram_id": 4242, "username": "u"}
+
+    monkeypatch.setattr(web_app, "_require_site_session", _require_session)
 
     async def _claim(sub_id):
         return True

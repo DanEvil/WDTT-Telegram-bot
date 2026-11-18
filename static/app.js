@@ -64,7 +64,6 @@
       : await api('/api/auth/site', { method: 'POST', body: '{}' });
     token = data.token;
     sessionStorage.setItem('wdtt_token', token);
-    window.__starsEnabled = false;
     window.__apps = (data.ecosystem && data.ecosystem.apps) || {};
     return data.user;
   }

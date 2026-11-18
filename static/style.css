@@ -173,7 +173,6 @@ button { font-family: inherit; }
 .plan .desc { font-size: 12px; color: var(--hint); margin-top: 2px; }
 .plan .price { text-align: right; flex: none; }
 .plan .price .rub { font-weight: 750; font-size: 17px; color: var(--btn); }
-.plan .price .stars { font-size: 12px; color: var(--hint); margin-bottom: 6px; }
 .plan .actions { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
 
 /* ===== приложения для подключения ===== */

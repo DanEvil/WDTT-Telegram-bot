@@ -38,11 +38,32 @@ C:\tools\gradle-8.11.1\bin\gradle -p C:\Users\nenas\WDTT-Telegram-bot\Android as
 
 ## Подпись release
 
-Сейчас release подписывается встроенным debug-ключом (`app/debug.keystore`
-нужно создать: `keytool -genkeypair -keystore app/debug.keystore -alias androiddebugkey
--storepass android -keypass android -dname "CN=K.O. Gateway" -keyalg RSA -keysize 2048 -validity 10000`),
-чтобы APK был устанавливаемым. Для публикации в Google Play замените
-`signingConfig` в `app/build.gradle` на свой keystore.
+Debug-сборка подписывается стандартным debug-ключом Android. Release-сборка
+использует отдельный keystore только при передаче всех четырёх параметров
+подписи; без них Gradle собирает неподписанные APK для локальной проверки.
+Не устанавливайте или не распространяйте такой APK как production-релиз.
+
+Создайте release-keystore вне репозитория и храните резервную копию в безопасном
+месте:
+
+```bat
+keytool -genkeypair -keystore C:\secure\ko-gateway-release.jks -alias ko-gateway ^
+  -keyalg RSA -keysize 2048 -validity 10000
+```
+
+Перед запуском Gradle задайте параметры в защищённом окружении CI либо локально
+(пароли не добавляйте в репозиторий):
+
+```bat
+set ANDROID_RELEASE_STORE_FILE=C:\secure\ko-gateway-release.jks
+set ANDROID_RELEASE_STORE_PASSWORD=<пароль-keystore>
+set ANDROID_RELEASE_KEY_ALIAS=ko-gateway
+set ANDROID_RELEASE_KEY_PASSWORD=<пароль-ключа>
+```
+
+Gradle принимает эти значения также как project properties с теми же именами.
+Не меняйте и не теряйте release-keystore: обновления Android-приложения должны
+подписываться тем же ключом.
 
 ## Структура
 

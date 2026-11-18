@@ -111,12 +111,9 @@ WEBAPP_HOST = os.getenv("WEBAPP_HOST", "0.0.0.0").strip()
 WEBAPP_PORT = _as_int("WEBAPP_PORT", 8082)
 # Публичный URL сайта (https://...) — ссылка на сайт из мини-аппа
 SITE_URL = os.getenv("SITE_URL", "").strip().rstrip("/")
+WEB_COOKIE_SECURE = _as_bool("WEB_COOKIE_SECURE", True)
 # Публичный URL приложения (https://...). Через него же бот отдаёт кнопку WebApp.
 MINIAPP_URL = os.getenv("MINIAPP_URL", "").strip().rstrip("/")
-# Оплата Telegram Stars
-STARS_ENABLED = _as_bool("STARS_ENABLED", True)
-STARS_RATE = float(os.getenv("STARS_RATE", "1.0"))  # сколько звёзд за 1 рубль
-
 # RedisStorage для FSM (multi-instance). Если REDIS_URL доступен — используем,
 # иначе MemoryStorage (single-instance).
 USE_REDIS_STORAGE = _as_bool("USE_REDIS_STORAGE", False)

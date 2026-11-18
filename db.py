@@ -211,6 +211,17 @@ async def init_db() -> None:
                 created_at     INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS site_sessions (
+                session_id TEXT PRIMARY KEY,
+                site_user_id INTEGER NOT NULL,
+                email TEXT,
+                username TEXT,
+                telegram_id INTEGER,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_site_sessions_expiry ON site_sessions(expires_at);
+
             CREATE TABLE IF NOT EXISTS bind_codes (
                 code         TEXT PRIMARY KEY,
                 site_user_id INTEGER NOT NULL,
@@ -289,6 +300,69 @@ async def init_db() -> None:
         
         # ---------- payments ----------
         
+async def save_site_session(session_id: str, session: dict, expires_at: int,
+                            max_sessions: int) -> None:
+    if max_sessions < 1:
+        raise ValueError("max_sessions must be positive")
+    now = int(time.time())
+    async with conn() as db:
+        await db.execute("DELETE FROM site_sessions WHERE expires_at <= ?", (now,))
+        await db.execute(
+            "INSERT OR REPLACE INTO site_sessions "
+            "(session_id, site_user_id, email, username, telegram_id, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, int(session["site_user_id"]), session.get("email"),
+             session.get("username"), session.get("telegram_id"),
+             int(session["created"]), int(expires_at)),
+        )
+        cur = await db.execute("SELECT COUNT(*) AS count FROM site_sessions")
+        excess = int((await cur.fetchone())["count"]) - max_sessions
+        if excess > 0:
+            await db.execute(
+                "DELETE FROM site_sessions WHERE session_id IN "
+                "(SELECT session_id FROM site_sessions ORDER BY created_at ASC LIMIT ?)",
+                (excess,),
+            )
+
+
+async def get_site_session(session_id: str) -> dict | None:
+    now = int(time.time())
+    async with conn() as db:
+        cur = await db.execute(
+            "SELECT site_user_id, email, username, telegram_id, created_at "
+            "FROM site_sessions WHERE session_id = ? AND expires_at > ?",
+            (session_id, now),
+        )
+        row = await cur.fetchone()
+        if row:
+            return dict(row)
+        await db.execute("DELETE FROM site_sessions WHERE session_id = ?", (session_id,))
+        return None
+
+
+async def delete_site_session(session_id: str) -> None:
+    async with conn() as db:
+        await db.execute("DELETE FROM site_sessions WHERE session_id = ?", (session_id,))
+
+
+async def prune_site_sessions(max_sessions: int) -> int:
+    if max_sessions < 1:
+        raise ValueError("max_sessions must be positive")
+    now = int(time.time())
+    async with conn() as db:
+        cur = await db.execute("DELETE FROM site_sessions WHERE expires_at <= ?", (now,))
+        removed = cur.rowcount or 0
+        cur = await db.execute("SELECT COUNT(*) AS count FROM site_sessions")
+        excess = int((await cur.fetchone())["count"]) - max_sessions
+        if excess > 0:
+            cur = await db.execute(
+                "DELETE FROM site_sessions WHERE session_id IN "
+                "(SELECT session_id FROM site_sessions ORDER BY created_at ASC LIMIT ?)",
+                (excess,),
+            )
+            removed += cur.rowcount or 0
+        return removed
+
 async def add_payment(telegram_id: int, username: str | None, payment_id: str,
                       plan_id: str, amount: str) -> None:
     async with conn() as db:
@@ -865,14 +939,167 @@ async def get_site_user_by_referral_code(referral_code: str) -> dict | None:
         return dict(row) if row else None
 
 
-async def bind_site_telegram(site_user_id: int, telegram_id: int) -> bool:
-    """Привязывает site_user к telegram_id (ещё не привязанному)."""
+async def bind_site_telegram(site_user_id: int, telegram_id: int) -> str:
+    """Атомарно связывает сайт-аккаунт с Telegram и переносит его данные.
+
+    Возвращает ``bound`` или код причины отказа. Если у обоих аккаунтов уже
+    есть данные подписки, платежей или пробного периода, привязка отменяется.
+    """
+    site_user_id = int(site_user_id)
+    telegram_id = int(telegram_id)
+    old_id = -abs(site_user_id)
+
     async with conn() as db:
-        cur = await db.execute(
+        await db.execute("BEGIN IMMEDIATE")
+        site_user = await (await db.execute(
+            "SELECT id, email, telegram_id FROM site_users WHERE id = ?",
+            (site_user_id,),
+        )).fetchone()
+        if not site_user:
+            return "site_user_not_found"
+        already_bound = site_user["telegram_id"] is not None
+        if already_bound and int(site_user["telegram_id"]) != telegram_id:
+            return "site_already_linked"
+        other_site_user = await (await db.execute(
+            "SELECT id FROM site_users WHERE telegram_id = ? AND id != ?",
+            (telegram_id, site_user_id),
+        )).fetchone()
+        if other_site_user:
+            return "telegram_already_linked"
+
+        email = str(site_user["email"] or "").strip().lower()
+        email_identity = None
+        if email:
+            email_identity = await (await db.execute(
+                "SELECT user_id FROM identities WHERE provider = 'email' AND subject = ?",
+                (email,),
+            )).fetchone()
+        telegram_identity = await (await db.execute(
+            "SELECT user_id FROM identities WHERE provider = 'telegram' AND subject = ?",
+            (str(telegram_id),),
+        )).fetchone()
+        if telegram_identity and int(telegram_identity["user_id"]) != telegram_id:
+            return "identity_conflict"
+
+        source_ids = {old_id}
+        if email_identity and int(email_identity["user_id"]) != telegram_id:
+            source_ids.add(int(email_identity["user_id"]))
+
+        async def has_account_data(user_id: int) -> bool:
+            customer = await (await db.execute(
+                "SELECT wdtt_password, expires_at, plan_id, server_id, sub_id, "
+                "auto_renew, notify_hours, payment_method_id, renew_notified, "
+                "renew_charge_exp, renew_charge_at, renew_charge_payment_id, "
+                "reminder_sent, traffic_notified, notify_tg_id "
+                "FROM customers WHERE telegram_id = ?",
+                (user_id,),
+            )).fetchone()
+            if customer and any((
+                customer["wdtt_password"],
+                int(customer["expires_at"] or 0) > 0,
+                customer["plan_id"],
+                customer["server_id"],
+                customer["sub_id"],
+                int(customer["auto_renew"] or 0) != 0,
+                int(customer["notify_hours"] or 0) != 0,
+                customer["payment_method_id"],
+                int(customer["renew_notified"] or 0) != 0,
+                int(customer["renew_charge_exp"] or 0) != 0,
+                int(customer["renew_charge_at"] or 0) != 0,
+                customer["renew_charge_payment_id"],
+                int(customer["reminder_sent"] or 0) != 0,
+                int(customer["traffic_notified"] or 0) != 0,
+                customer["notify_tg_id"],
+            )):
+                return True
+            for table, condition in (
+                ("payments", "status = 'paid'"),
+                ("fulfillments", "status IN ('processing', 'pending', 'applied')"),
+            ):
+                row = await (await db.execute(
+                    f"SELECT 1 FROM {table} WHERE telegram_id = ? AND {condition} LIMIT 1",
+                    (user_id,),
+                )).fetchone()
+                if row:
+                    return True
+            row = await (await db.execute(
+                "SELECT 1 FROM trials WHERE telegram_id = ? LIMIT 1", (user_id,)
+            )).fetchone()
+            return row is not None
+
+        populated_ids = {
+            user_id for user_id in source_ids | {telegram_id}
+            if await has_account_data(user_id)
+        }
+        if len(populated_ids) > 1:
+            return "data_conflict"
+
+        for source_id in source_ids:
+            if source_id == telegram_id:
+                continue
+            source_customer = await (await db.execute(
+                "SELECT 1 FROM customers WHERE telegram_id = ?", (source_id,)
+            )).fetchone()
+            target_customer = await (await db.execute(
+                "SELECT 1 FROM customers WHERE telegram_id = ?", (telegram_id,)
+            )).fetchone()
+            if source_customer and not target_customer:
+                await db.execute(
+                    "UPDATE customers SET telegram_id = ? WHERE telegram_id = ?",
+                    (telegram_id, source_id),
+                )
+            elif source_customer and target_customer:
+                source_has_data = await has_account_data(source_id)
+                target_has_data = await has_account_data(telegram_id)
+                if source_has_data and not target_has_data:
+                    await db.execute("DELETE FROM customers WHERE telegram_id = ?", (telegram_id,))
+                    await db.execute(
+                        "UPDATE customers SET telegram_id = ? WHERE telegram_id = ?",
+                        (telegram_id, source_id),
+                    )
+            await db.execute(
+                "UPDATE payments SET telegram_id = ? WHERE telegram_id = ?",
+                (telegram_id, source_id),
+            )
+            await db.execute(
+                "UPDATE fulfillments SET telegram_id = ? WHERE telegram_id = ?",
+                (telegram_id, source_id),
+            )
+            source_trial = await (await db.execute(
+                "SELECT used_at FROM trials WHERE telegram_id = ?", (source_id,)
+            )).fetchone()
+            if source_trial:
+                await db.execute(
+                    "INSERT OR IGNORE INTO trials (telegram_id, used_at) VALUES (?, ?)",
+                    (telegram_id, source_trial["used_at"]),
+                )
+                await db.execute("DELETE FROM trials WHERE telegram_id = ?", (source_id,))
+            await db.execute(
+                "UPDATE identities SET user_id = ? WHERE user_id = ?",
+                (telegram_id, source_id),
+            )
+
+        await db.execute(
             "UPDATE site_users SET telegram_id = ? WHERE id = ? AND telegram_id IS NULL",
             (telegram_id, site_user_id),
         )
-        return cur.rowcount > 0
+        await db.execute(
+            "UPDATE site_sessions SET telegram_id = ? WHERE site_user_id = ?",
+            (telegram_id, site_user_id),
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO identities (provider, subject, user_id, created_at) "
+            "VALUES ('telegram', ?, ?, ?)",
+            (str(telegram_id), telegram_id, int(time.time())),
+        )
+        if email:
+            await db.execute(
+                "INSERT INTO identities (provider, subject, user_id, created_at) "
+                "VALUES ('email', ?, ?, ?) "
+                "ON CONFLICT(provider, subject) DO UPDATE SET user_id = excluded.user_id",
+                (email, telegram_id, int(time.time())),
+            )
+        return "already_bound" if already_bound else "bound"
 
 
 # ---------- servers ----------

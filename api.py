@@ -266,8 +266,6 @@ async def plans_payload() -> dict:
         "plans": [_plan_json(p, False) for p in plans],
         "addons": [_plan_json(p, True) for p in DEVICE_ADDONS],
         "trial": _plan_json(TRIAL, False) | {"price": 0, "free": True},
-        # оплата Telegram Stars в мини-приложении отключена
-        "stars_enabled": False,
     }
 
 
@@ -343,7 +341,6 @@ async def h_auth(request: web.Request) -> web.Response:
         "token": make_session(uid, config.TELEGRAM_TOKEN),
         "user": {"id": uid, "first_name": user.get("first_name", ""), "username": user.get("username", "")},
         "is_admin": is_admin_uid(uid),
-        "stars_enabled": False,
         "ecosystem": ecosystem_payload(await app_windows_url_effective()),
     })
 
@@ -496,7 +493,6 @@ async def h_email_verify(request: web.Request) -> web.Response:
         "token": make_session(uid, config.TELEGRAM_TOKEN),
         "user": {"id": uid, "email": email, "first_name": email.split("@")[0]},
         "is_admin": is_admin_uid(uid),
-        "stars_enabled": False,
         "ecosystem": ecosystem_payload(await app_windows_url_effective()),
     })
 

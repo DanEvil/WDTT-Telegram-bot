@@ -44,8 +44,9 @@ async def test_tg_login_do_creates_session():
     d = __import__("json").loads(resp.body)
     assert d["ok"] and d["redirect"] == "/profile"
     cookie = resp.cookies.get("session_id")
-    assert cookie and cookie.value in web_app.SESSIONS
-    sess = web_app.SESSIONS[cookie.value]
+    assert cookie and cookie["httponly"] and cookie["secure"]
+    sess = await web_app.get_site_session(cookie.value)
+    assert sess
     assert sess["telegram_id"] == TG_USER
 
     # site_user создан и привязан к telegram_id
@@ -86,10 +87,15 @@ async def test_tg_login_page():
 
     # с валидной сессией — редирект
     sid = "testsid123"
-    web_app.SESSIONS[sid] = {"site_user_id": 1, "telegram_id": TG_USER, "email": None, "created": time.time()}
+    await web_app.save_site_session(
+        sid,
+        {"site_user_id": 1, "telegram_id": TG_USER, "email": None, "created": int(time.time())},
+        int(time.time()) + web_app.SESSION_TTL,
+        web_app.SESSION_MAX,
+    )
     try:
         with pytest.raises(web.HTTPFound) as ei:
             await web_app.handle_tg_login_page(_Req(cookies={"session_id": sid}))
         assert ei.value.location == "/profile"
     finally:
-        web_app.SESSIONS.pop(sid, None)
+        await web_app.delete_site_session(sid)

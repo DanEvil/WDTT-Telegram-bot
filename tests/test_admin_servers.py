@@ -16,6 +16,12 @@ def _session(telegram_id: int) -> dict:
     return {"site_user_id": 1, "telegram_id": telegram_id, "email": "a@example.com", "created": time.time()}
 
 
+def _session_lookup(telegram_id: int):
+    async def lookup(request):
+        return _session(telegram_id)
+    return lookup
+
+
 class _Req:
     def __init__(self, data: dict):
         self._data = data
@@ -48,7 +54,7 @@ def _mock_admin_db(monkeypatch):
 async def test_admin_page_shows_install_form(monkeypatch):
     """Админ видит форму /admin/server/install и таблицу серверов с лимитами."""
     _mock_admin_db(monkeypatch)
-    monkeypatch.setattr(web_app, "_get_site_session", lambda request: _session(ADMIN_TG))
+    monkeypatch.setattr(web_app, "_get_site_session", _session_lookup(ADMIN_TG))
     resp = await web_app.handle_admin(_Req({}))
     assert resp.status == 200
     assert "/admin/server/install" in resp.text
@@ -57,13 +63,13 @@ async def test_admin_page_shows_install_form(monkeypatch):
 
 async def test_admin_page_forbidden_for_non_admin(monkeypatch):
     _mock_admin_db(monkeypatch)
-    monkeypatch.setattr(web_app, "_get_site_session", lambda request: _session(999999))
+    monkeypatch.setattr(web_app, "_get_site_session", _session_lookup(999999))
     resp = await web_app.handle_admin(_Req({}))
     assert resp.status == 403
 
 
 async def test_install_requires_admin(monkeypatch):
-    monkeypatch.setattr(web_app, "_get_site_session", lambda request: _session(999999))
+    monkeypatch.setattr(web_app, "_get_site_session", _session_lookup(999999))
     resp = await web_app.handle_admin_install_server(_Req({
         "name": "de2", "host": "1.2.3.4", "ssh_port": "22", "ssh_user": "root", "ssh_password": "x",
     }))
@@ -71,14 +77,14 @@ async def test_install_requires_admin(monkeypatch):
 
 
 async def test_install_validates_fields(monkeypatch):
-    monkeypatch.setattr(web_app, "_get_site_session", lambda request: _session(ADMIN_TG))
+    monkeypatch.setattr(web_app, "_get_site_session", _session_lookup(ADMIN_TG))
     resp = await web_app.handle_admin_install_server(_Req({"name": "", "host": "", "ssh_port": "abc"}))
     assert resp.status == 400
 
 
 async def test_install_starts_background_deploy(monkeypatch):
     """Валидный POST запускает фоновую установку и сразу возвращает редирект."""
-    monkeypatch.setattr(web_app, "_get_site_session", lambda request: _session(ADMIN_TG))
+    monkeypatch.setattr(web_app, "_get_site_session", _session_lookup(ADMIN_TG))
 
     deployed = {}
 

@@ -7,7 +7,6 @@
 import asyncio
 import functools
 import html
-import json
 import logging
 import re
 import secrets
@@ -32,14 +31,12 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     KeyboardButton,
     Message,
-    PreCheckoutQuery,
     ReplyKeyboardMarkup,
     WebAppInfo,
 )
 
 import config
 from db import (
-    add_identity,
     add_payment,
     add_referral,
     add_server,
@@ -1008,44 +1005,35 @@ async def _bind_site_code(message: Message, code: str) -> None:
     if not site_user:
         await message.answer("❌ Аккаунт на сайте не найден.")
         return
-    ok = await bind_site_telegram(site_user["id"], message.from_user.id)
-    if not ok:
+    bind_status = await bind_site_telegram(site_user["id"], message.from_user.id)
+    if bind_status not in {"bound", "already_bound"}:
+        if bind_status == "data_conflict":
+            await message.answer(
+                "⚠️ В обоих аккаунтах уже есть данные подписки, платежей или пробного периода. "
+                "Привязка не выполнена, данные не изменены. Обратитесь в поддержку для проверки аккаунтов."
+            )
+            return
+        if bind_status == "telegram_already_linked":
+            await message.answer(
+                "⚠️ Этот Telegram уже привязан к другому аккаунту сайта. "
+                "Сначала обратитесь в поддержку — аккаунты автоматически не объединяются."
+            )
+            return
+        if bind_status == "identity_conflict":
+            await message.answer(
+                "⚠️ Для этого Telegram уже зарегистрирован другой профиль авторизации. "
+                "Привязка не выполнена; обратитесь в поддержку для проверки аккаунта."
+            )
+            return
         await message.answer(
             "⚠️ Этот аккаунт на сайте уже привязан к другому Telegram или код уже использован."
         )
         return
     await mark_bind_code_used(code)
-    # F01: регистрируем идентичности привязанного аккаунта (без авто-склейки:
-    # add_identity вернёт False при конфликте — тогда нужен ручной разбор)
-    fu = message.from_user
-    tg_id0 = int(fu.id) if fu else 0
-    if tg_id0 and not await add_identity("telegram", str(tg_id0), tg_id0):
-        log.warning("F01: telegram %s уже привязан к другому аккаунту", tg_id0)
-    su_email = (site_user.get("email") or "").strip().lower()
-    if su_email and tg_id0 and not await add_identity("email", su_email, tg_id0):
-        log.warning("F01: email %s уже привязан к другому аккаунту (bind tg %s)", su_email, tg_id0)
     # фиксируем пользователя Telegram в базе (customers), чтобы подписка
-    # была привязана и работала выдача/продление через бота
+    # была доступна через бот, сайт и Mini App
     tg_id = message.from_user.id
     async with db_conn() as db:
-        # если подписка была куплена на сайте без привязки (псевдо-id),
-        # переносим её на реальный telegram_id
-        old_id = -abs(int(site_user["id"]))
-        cur = await db.execute("SELECT telegram_id FROM customers WHERE telegram_id = ?", (tg_id,))
-        already = await cur.fetchone()
-        if not already:
-            cur = await db.execute(
-                "SELECT telegram_id FROM customers WHERE telegram_id = ?", (old_id,)
-            )
-            old_row = await cur.fetchone()
-            if old_row:
-                await db.execute(
-                    "UPDATE customers SET telegram_id = ?, username = COALESCE(NULLIF(?, ''), username) "
-                    "WHERE telegram_id = ?",
-                    (tg_id, message.from_user.username or message.from_user.first_name or "", old_id),
-                )
-                await db.execute("UPDATE payments SET telegram_id = ? WHERE telegram_id = ?", (tg_id, old_id))
-                await db.execute("UPDATE trials SET telegram_id = ? WHERE telegram_id = ?", (tg_id, old_id))
         await db.execute(
             "INSERT INTO customers (telegram_id, username, expires_at, plan_id, server_id, created_at) "
             "VALUES (?, ?, 0, NULL, NULL, ?) "
@@ -1098,80 +1086,6 @@ async def _web_login_confirm(message: Message, code: str) -> None:
             ),
         ]]),
     )
-
-
-# ---------- Telegram Stars ----------
-
-@router.pre_checkout_query()
-async def on_pre_checkout(query: PreCheckoutQuery) -> None:
-    """Подтверждаем pre-checkout для Stars (всегда ок — валидация будет в successful_payment)."""
-    try:
-        await query.answer(True)
-    except Exception:
-        log.exception("pre_checkout answer")
-
-
-@router.message(F.successful_payment)
-async def on_successful_payment(message: Message) -> None:
-    """Оплата Telegram Stars прошла — выдаём доступ по invoice_payload."""
-    sp = message.successful_payment
-    if not sp or sp.currency != "XTR":
-        return
-    charge_id = sp.telegram_payment_charge_id
-    payment_id = f"stars:{charge_id}"
-    try:
-        payload = json.loads(sp.invoice_payload or "{}")
-    except ValueError:
-        payload = {}
-    plan_id = str(payload.get("plan_id") or "")
-    telegram_id = int(payload.get("tg") or message.from_user.id)
-    plan = await get_plan(plan_id) or ALL_PLANS_BY_ID.get(plan_id)
-    if not plan:
-        log.warning("Stars: неизвестный тариф %s в payload %s", plan_id, sp.invoice_payload)
-        return
-    # защита от дубля
-    existing = await get_payment(payment_id)
-    if existing and existing["status"] in ("paid", "fulfilled"):
-        return
-    await add_payment(telegram_id, message.from_user.username, payment_id, plan_id,
-                      f"{sp.total_amount} XTR")
-    await set_payment_status(payment_id, "paid", paid_at=int(time.time()))
-    try:
-        client, pwd, expires = await grant_access(telegram_id, message.from_user.username, plan)
-        await set_payment_status(payment_id, "fulfilled")
-        customer = await get_customer(telegram_id)
-        links = await links_json(client, pwd, (customer or {}).get("sub_id"))
-        links_html = ""
-        if links:
-            parts = [f"<code>{html.escape(v)}</code>" for v in links.values()]
-            links_html = "\n🔗 Ссылки:\n" + "\n".join(parts) + "\n"
-        if plan.get("addon"):
-            await message.answer(
-                f"✅ <b>Оплата звёздами прошла!</b> ({sp.total_amount} ⭐)\n\n"
-                f"Теперь можно подключить до <b>{plan['max_devices']} устройств</b> "
-                f"(тариф «{html.escape(plan['name'])}»). Срок подписки не изменился: до {fmt_date(expires)}.\n"
-                f"{links_html}\nПриложение: кнопка «🚀 Открыть приложение» в /start"
-            )
-        else:
-            await message.answer(
-                f"✅ <b>Оплата звёздами прошла!</b> ({sp.total_amount} ⭐)\n\n"
-                f"Подписка «{html.escape(plan['name'])}» активирована до {fmt_date(expires)}.\n"
-                f"{links_html}\nПриложение: кнопка «🚀 Открыть приложение» в /start"
-            )
-        await notify_admin(
-            f"⭐ Оплата Stars: {sp.total_amount} ⭐ — {html.escape(plan['name'])}\n"
-            f"Клиент: {telegram_id}"
-            + (f" (@{html.escape(message.from_user.username)})" if message.from_user.username else "")
-        )
-        await grant_referral_reward(telegram_id)
-        import metrics as m
-        m.inc_counter(m.PAYMENTS_TOTAL, status="succeeded", method="stars")
-    except Exception as e:
-        log.exception("Stars: ошибка выдачи доступа %s", payment_id)
-        await notify_admin(
-            f"🚨 <b>Stars-ошибка выдачи</b>\nПлатёж: <code>{payment_id}</code>\n"
-            f"Клиент: {telegram_id}\nПричина: <code>{html.escape(str(e))}</code>"
-        )
 
 
 async def ref_text(telegram_id: int) -> str:

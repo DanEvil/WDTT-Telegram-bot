@@ -20,6 +20,12 @@ def _session(telegram_id: int) -> dict:
     return {"site_user_id": 1, "telegram_id": telegram_id, "email": "u@example.com", "created": time.time()}
 
 
+def _session_lookup(telegram_id: int | None):
+    async def lookup(request):
+        return _session(telegram_id) if telegram_id is not None else None
+    return lookup
+
+
 async def test_pay_success_foreign_payment_is_ignored(monkeypatch):
     """Чужой payment_id не должен запускать fulfillment."""
     calls: list[str] = []
@@ -31,7 +37,7 @@ async def test_pay_success_foreign_payment_is_ignored(monkeypatch):
         return {"payment_id": payment_id, "telegram_id": 222, "status": "paid"}
 
     monkeypatch.setattr(bot, "fulfill_payment", fake_fulfill)
-    monkeypatch.setattr(web_app, "_get_session", lambda request: _session(111))
+    monkeypatch.setattr(web_app, "_get_session", _session_lookup(111))
     monkeypatch.setattr(web_app, "get_payment", fake_get_payment)
 
     response = await web_app.handle_pay_success(_request("pay-foreign"))
@@ -52,7 +58,7 @@ async def test_pay_success_own_payment_grants_access(monkeypatch):
         return {"payment_id": payment_id, "telegram_id": 111, "status": state["status"]}
 
     monkeypatch.setattr(bot, "fulfill_payment", fake_fulfill)
-    monkeypatch.setattr(web_app, "_get_session", lambda request: _session(111))
+    monkeypatch.setattr(web_app, "_get_session", _session_lookup(111))
     monkeypatch.setattr(web_app, "get_payment", fake_get_payment)
 
     response = await web_app.handle_pay_success(_request("pay-own"))
@@ -72,7 +78,7 @@ async def test_pay_success_without_session_does_not_fulfill(monkeypatch):
         return {"payment_id": payment_id, "telegram_id": 111, "status": "paid"}
 
     monkeypatch.setattr(bot, "fulfill_payment", fake_fulfill)
-    monkeypatch.setattr(web_app, "_get_session", lambda request: None)
+    monkeypatch.setattr(web_app, "_get_session", _session_lookup(None))
     monkeypatch.setattr(web_app, "get_payment", fake_get_payment)
 
     response = await web_app.handle_pay_success(_request("pay-any"))

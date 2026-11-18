@@ -53,6 +53,7 @@ from db import (
     is_admin_cached, list_admins, list_admin_invites,
     add_admin, remove_admin, create_admin_invite, revoke_admin_invite,
     get_app_windows_url, set_setting,
+    save_site_session, get_site_session, delete_site_session, prune_site_sessions,
 )
 from payments import create_payment, fetch_payment
 from plans import PLANS, TRIAL, ALL_PLANS_BY_ID
@@ -134,42 +135,18 @@ def _bot_link(start: str = "") -> str:
     suffix = f"?start={start}" if start else ""
     return f"https://t.me/{BOT_USERNAME}{suffix}"
 
-# ---------- простые сессии в памяти ----------
-SESSION_SECRET = os.getenv("WEB_SESSION_SECRET", os.urandom(24).hex())
-SESSIONS: dict[str, dict] = {}  # session_id -> {"site_user_id": int, "email": str, "username": str|None, "telegram_id": int|None, "created": float}
-# TTL сессии сайта (по умолчанию 30 дней) и лимит на число живых сессий
+# ---------- сессии сайта ----------
 SESSION_TTL = int(os.getenv("WEB_SESSION_TTL", str(30 * 86400)))
 SESSION_MAX = int(os.getenv("WEB_SESSION_MAX", "10000"))
 
 
-def _session_expired(sess: dict) -> bool:
-    created = float(sess.get("created") or 0)
-    return (time.time() - created) > SESSION_TTL
+async def _prune_sessions() -> None:
+    await prune_site_sessions(SESSION_MAX)
 
 
-def _prune_sessions() -> None:
-    """Выкидывает протухшие сессии и ограничивает размер справедливости."""
-    now = time.time()
-    expired = [sid for sid, s in SESSIONS.items() if (now - float(s.get("created") or 0)) > SESSION_TTL]
-    for sid in expired:
-        SESSIONS.pop(sid, None)
-    if len(SESSIONS) > SESSION_MAX:
-        # удаляем самые старые
-        oldest = sorted(SESSIONS.items(), key=lambda kv: float(kv[1].get("created") or 0))
-        for sid, _ in oldest[:len(SESSIONS) - SESSION_MAX]:
-            SESSIONS.pop(sid, None)
-
-
-def _get_session(request: web.Request) -> dict | None:
-    """Алиас для обратной совместимости — читает текущую сессию сайта."""
+async def _get_session(request: web.Request) -> dict | None:
     sid = request.cookies.get("session_id")
-    if sid and sid in SESSIONS:
-        sess = SESSIONS[sid]
-        if _session_expired(sess):
-            SESSIONS.pop(sid, None)
-            return None
-        return sess
-    return None
+    return await get_site_session(sid) if sid else None
 
 # ---------- пароли (site_users) ----------
 
@@ -195,22 +172,26 @@ def _check_password(password: str, stored: str) -> bool:
 
 # ---------- сессия сайта ----------
 
-_get_site_session = _get_session  # единая реализация сессии
+_get_site_session = _get_session
 
-def set_site_session(response: web.Response, site_user: dict) -> None:
+async def set_site_session(response: web.Response, site_user: dict) -> None:
     sid = uuid.uuid4().hex
-    _prune_sessions()
-    SESSIONS[sid] = {
-        "site_user_id": site_user["id"],
+    created = int(time.time())
+    sess = {
+        "site_user_id": int(site_user["id"]),
         "email": site_user["email"],
         "username": site_user.get("username"),
         "telegram_id": site_user.get("telegram_id"),
-        "created": time.time(),
+        "created": created,
     }
-    response.set_cookie("session_id", sid, httponly=True, samesite="Lax", path="/")
+    await save_site_session(sid, sess, created + SESSION_TTL, SESSION_MAX)
+    response.set_cookie(
+        "session_id", sid, max_age=SESSION_TTL, httponly=True,
+        secure=config.WEB_COOKIE_SECURE, samesite="Lax", path="/",
+    )
 
-def _require_site_session(request: web.Request) -> dict:
-    s = _get_site_session(request)
+async def _require_site_session(request: web.Request) -> dict:
+    s = await _get_site_session(request)
     if not s:
         raise web.HTTPFound("/login")
     return s
@@ -311,40 +292,13 @@ def _csrf_check_telegram(data: dict) -> bool:
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 
-async def handle_spa(request: web.Request) -> web.Response:
-    """Главная сайта — тот же SPA, что и Mini App в Telegram (static/index.html).
-
-    Бренд/бот подставляем в window.__* как в webapp.py; __siteUrl намеренно
-    пустой (мы уже на сайте), чтобы ссылка «Наш сайт» не дублировалась.
-    """
-    import json as _json
-    with open(os.path.join(STATIC_DIR, "index.html"), "r", encoding="utf-8") as f:
-        html_text = f.read()
-    brand = BRAND
-    html_text = html_text.replace(
-        "<title>K.O. Gateway — подписка</title>",
-        f"<title>{html.escape(brand)} — подписка</title>",
-    )
-    bot_url = f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else ""
-    html_text = html_text.replace(
-        "<body>",
-        f'<body>\n<script>window.__brand = {_json.dumps(brand)};'
-        f'window.__siteUrl = "";'
-        f'window.__botUrl = {_json.dumps(bot_url)};</script>',
-        1,
-    )
-    resp = web.Response(text=html_text, content_type="text/html")
-    resp.headers["Cache-Control"] = "no-cache, must-revalidate"
-    return resp
-
-
 async def api_auth_site(request: web.Request) -> web.Response:
     """POST|GET /api/auth/site — авторизация SPA сайта по сессионной куке.
 
     Возвращает тот же контракт, что /api/auth в мини-аппе: {token, user, is_admin, ecosystem}.
     """
     from api import make_session, ecosystem_payload, app_windows_url_effective, is_admin_uid
-    sess = _get_session(request)
+    sess = await _get_session(request)
     if not sess:
         return web.json_response({"error": "login required"}, status=401)
     uid = _sub_id(sess)
@@ -357,7 +311,6 @@ async def api_auth_site(request: web.Request) -> web.Response:
             "username": sess.get("username") or "",
         },
         "is_admin": is_admin_uid(uid),
-        "stars_enabled": False,
         "ecosystem": ecosystem_payload(await app_windows_url_effective()),
     })
 
@@ -402,7 +355,7 @@ def _apps_card_html(win_url: str) -> str:
 
 
 async def handle_index(request: web.Request) -> web.Response:
-    session = _get_session(request)
+    session = await _get_session(request)
     win_url = await get_app_windows_url()
     trial_html = ""
     login_cta = ""
@@ -442,7 +395,7 @@ async def handle_index(request: web.Request) -> web.Response:
 async def handle_plans(request: web.Request) -> web.Response:
     """Страница «Тарифы» — отдельная, как вкладка в Mini App (не якорь на главной)."""
     from plans import DEVICE_ADDONS
-    session = _get_session(request)
+    session = await _get_session(request)
     plans = await list_plans() or list(PLANS)
     win_url = await get_app_windows_url()
     addons_html = ""
@@ -525,7 +478,8 @@ _BIND_FORM = """
 <div class="card" style="max-width:480px;margin:2rem auto">
   <h3>🔗 Привязка Telegram</h3>
   <p>Нажмите кнопку ниже — откроется наш бот в Telegram, и аккаунт на сайте
-     автоматически привяжется к вашему профилю (данные запишутся в базу).</p>
+     привяжется к вашему профилю. После этого сайт и Mini App будут показывать одну подписку.
+     Если у обоих аккаунтов уже есть отдельные подписки или пробные периоды, привязка будет остановлена.</p>
   <p style="text-align:center;margin:1.2rem 0">
     <a class="btn" href="{deep_link}" target="_blank" rel="noopener">🤖 Открыть бота и привязать Telegram</a>
   </p>
@@ -537,7 +491,7 @@ _BIND_FORM = """
 """
 
 async def handle_register_get(request: web.Request) -> web.Response:
-    session = _get_session(request)
+    session = await _get_session(request)
     if session:
         raise web.HTTPFound("/profile")
     return web.Response(text=_page("Регистрация", _REGISTER_FORM_TG.replace("{tg_block}", _tg_login_block(request)), session), content_type="text/html")
@@ -571,12 +525,12 @@ async def handle_register_post(request: web.Request) -> web.Response:
             await add_site_referral(site_user_id, referrer["id"])
     site_user = {"id": site_user_id, "email": email, "username": username, "telegram_id": None, "referral_code": referral_code}
     response = web.HTTPFound("/profile")
-    set_site_session(response, site_user)
+    await set_site_session(response, site_user)
     response.del_cookie("ref_code", path="/")
     return response
 
 async def handle_login_get(request: web.Request) -> web.Response:
-    session = _get_session(request)
+    session = await _get_session(request)
     if session:
         raise web.HTTPFound("/profile")
     return web.Response(text=_page("Вход", _login_form(request), session), content_type="text/html")
@@ -594,11 +548,11 @@ async def handle_login_post(request: web.Request) -> web.Response:
     if not site_user or not _check_password(password, site_user["password_hash"]):
         return web.Response(text=_page("Ошибка", "<p class='err'>Неверный email или пароль.</p><a href='/login'>Попробовать снова</a>"), content_type="text/html")
     response = web.HTTPFound("/profile")
-    set_site_session(response, site_user)
+    await set_site_session(response, site_user)
     return response
 
 async def handle_bind_telegram(request: web.Request) -> web.Response:
-    session = _require_site_session(request)
+    session = await _require_site_session(request)
     await init_db()
     # создаём код привязки, если ещё не создан
     async with db_conn() as db:
@@ -668,7 +622,7 @@ async def _telegram_login_by_code(code: str, max_age: int) -> web.Response:
 
     await mark_login_request_used(code)
     response = web.HTTPFound("/profile")
-    set_site_session(response, {
+    await set_site_session(response, {
         "id": site_user_id,
         "email": None,
         "username": user_name,
@@ -764,7 +718,7 @@ _TG_LOGIN_PAGE = """<!doctype html>
 
 async def handle_tg_login_page(request: web.Request) -> web.Response:
     """GET /tg-login — автовход на сайт из мини-аппа (ссылка вида /tg-login#init=<initData>)."""
-    if _get_site_session(request):
+    if await _get_site_session(request):
         raise web.HTTPFound("/profile")
     return web.Response(text=_TG_LOGIN_PAGE, content_type="text/html")
 
@@ -785,7 +739,7 @@ async def handle_tg_login_do(request: web.Request) -> web.Response:
     sess = await _telegram_user_site_login(telegram_id, user.get("username"), user.get("first_name") or "")
     log.info("tg-login: автовход tg=%s (site_user #%s)", telegram_id, sess["id"])
     resp = web.json_response({"ok": True, "redirect": "/profile"})
-    set_site_session(resp, sess)
+    await set_site_session(resp, sess)
     return resp
 
 
@@ -801,7 +755,7 @@ async def handle_auth_telegram(request: web.Request) -> web.Response:
 
     sess = await _telegram_user_site_login(telegram_id, username, first_name)
     response = web.HTTPFound("/profile")
-    set_site_session(response, sess)
+    await set_site_session(response, sess)
     return response
 
 async def _ensure_bind_code(site_user_id: int) -> str:
@@ -823,7 +777,7 @@ async def _ensure_bind_code(site_user_id: int) -> str:
 
 
 async def handle_profile(request: web.Request) -> web.Response:
-    session = _require_site_session(request)
+    session = await _require_site_session(request)
     site_user_id = session["site_user_id"]
     tg_id = session.get("telegram_id")
     await init_db()
@@ -931,7 +885,7 @@ async def handle_profile(request: web.Request) -> web.Response:
         body += f"""
     <div class="card">
       <h3>🔗 Привязка Telegram</h3>
-      <p>Привяжите свой Telegram-аккаунт, чтобы видеть подписку и в боте.</p>
+      <p>Привяжите Telegram, чтобы сайт и Mini App использовали одну подписку. Email/пароль и вход через Telegram остаются доступными независимо друг от друга.</p>
       {f'<p style="color:var(--muted);font-size:.85rem">Нажмите кнопку — откроется Telegram, и аккаунт привяжется автоматически.</p><a href="{bind_link}" class="btn btn-tg" target="_blank" rel="noopener">Перейти в Telegram и привязать</a>' if bind_link else '<a href="/bind-telegram" class="btn">Получить код привязки</a>'}
     </div>
         """
@@ -962,7 +916,7 @@ async def handle_profile(request: web.Request) -> web.Response:
     return web.Response(text=_page("Профиль", body, session), content_type="text/html")
 
 async def handle_buy(request: web.Request) -> web.Response:
-    session = _require_site_session(request)
+    session = await _require_site_session(request)
     sub_id = _sub_id(session)
     plan_id = request.match_info.get("plan_id")
     await init_db()
@@ -1030,7 +984,7 @@ async def handle_buy(request: web.Request) -> web.Response:
     raise web.HTTPFound(payment["url"])
 
 async def handle_pay_success(request: web.Request) -> web.Response:
-    session = _get_session(request)
+    session = await _get_session(request)
     payment_id = request.query.get("payment_id")
     body = "<h2>Оплата</h2>"
     if session and not payment_id:
@@ -1063,7 +1017,7 @@ async def handle_pay_success(request: web.Request) -> web.Response:
     return web.Response(text=_page("Оплата", body, session), content_type="text/html")
 
 async def handle_pay_cancel(request: web.Request) -> web.Response:
-    session = _get_session(request)
+    session = await _get_session(request)
     body = "<h2>Оплата отменена</h2><p>Вы можете попробовать ещё раз на <a href='/'>главной странице</a>.</p>"
     return web.Response(text=_page("Отмена", body, session), content_type="text/html")
 
@@ -1169,7 +1123,7 @@ async def handle_instruction(request: web.Request) -> web.Response:
     <div class="dev-grid">{_platform_cards_html(plats)}</div>
     """
     return web.Response(
-        text=_page("Инструкция", body, _get_session(request), active="Инструкция",
+        text=_page("Инструкция", body, await _get_session(request), active="Инструкция",
                    subtitle="Выберите ваше устройство"),
         content_type="text/html",
     )
@@ -1209,7 +1163,7 @@ async def handle_instruction_device(request: web.Request) -> web.Response:
     </div>
     """
     return web.Response(
-        text=_page(p["title"], body, _get_session(request), active="Инструкция",
+        text=_page(p["title"], body, await _get_session(request), active="Инструкция",
                    subtitle=instr.INTRO),
         content_type="text/html",
     )
@@ -1217,7 +1171,7 @@ async def handle_instruction_device(request: web.Request) -> web.Response:
 # ---------- админ ----------
 
 async def handle_admin(request: web.Request) -> web.Response:
-    session = _require_site_session(request)
+    session = await _require_site_session(request)
     tg_id = session.get("telegram_id")
     if not tg_id or not _is_admin(tg_id):
         return web.Response(text=_page("Ошибка", "<p class='err'>Доступ только для администратора.</p>"), status=403)
@@ -1348,7 +1302,7 @@ def _field(data, key: str) -> str:
 
 async def handle_admin_install_server(request: web.Request) -> web.Response:
     """POST /admin/server/install — запускает автоустановку панели на новом сервере."""
-    session = _require_site_session(request)
+    session = await _require_site_session(request)
     tg_id = session.get("telegram_id")
     if not tg_id or not _is_admin(tg_id):
         return web.Response(text=_page("Ошибка", "<p class='err'>Доступ только для администратора.</p>"), status=403)
@@ -1371,9 +1325,9 @@ async def handle_admin_install_server(request: web.Request) -> web.Response:
     raise web.HTTPFound("/admin#installs")
 
 
-def _admin_guard(request: web.Request):
+async def _admin_guard(request: web.Request):
     """(session, tg_id) если это админ, иначе None."""
-    session = _require_site_session(request)
+    session = await _require_site_session(request)
     tg_id = session.get("telegram_id")
     if not tg_id or not _is_admin(tg_id):
         return None
@@ -1386,7 +1340,7 @@ async def _admin_forbidden() -> web.Response:
 
 async def handle_admin_add_admin(request: web.Request) -> web.Response:
     """POST /admin/admins/add — назначить админа по Telegram ID."""
-    guard = _admin_guard(request)
+    guard = await _admin_guard(request)
     if not guard:
         return await _admin_forbidden()
     _, tg_id = guard
@@ -1404,7 +1358,7 @@ async def handle_admin_add_admin(request: web.Request) -> web.Response:
 
 async def handle_admin_remove_admin(request: web.Request) -> web.Response:
     """POST /admin/admins/remove — снять админа, назначенного через панель."""
-    guard = _admin_guard(request)
+    guard = await _admin_guard(request)
     if not guard:
         return await _admin_forbidden()
     _, tg_id = guard
@@ -1427,7 +1381,7 @@ async def handle_admin_remove_admin(request: web.Request) -> web.Response:
 
 async def handle_admin_create_invite(request: web.Request) -> web.Response:
     """POST /admin/invites/create — создать одноразовую ссылку-приглашение в админы."""
-    guard = _admin_guard(request)
+    guard = await _admin_guard(request)
     if not guard:
         return await _admin_forbidden()
     _, tg_id = guard
@@ -1438,7 +1392,7 @@ async def handle_admin_create_invite(request: web.Request) -> web.Response:
 
 async def handle_admin_revoke_invite(request: web.Request) -> web.Response:
     """POST /admin/invites/revoke — отозвать неиспользованное приглашение."""
-    guard = _admin_guard(request)
+    guard = await _admin_guard(request)
     if not guard:
         return await _admin_forbidden()
     _, tg_id = guard
@@ -1454,7 +1408,7 @@ async def handle_admin_revoke_invite(request: web.Request) -> web.Response:
 
 async def handle_admin_settings_windows(request: web.Request) -> web.Response:
     """POST /admin/settings/windows — задать ссылку PWDTT (Windows) из админ-панели сайта."""
-    guard = _admin_guard(request)
+    guard = await _admin_guard(request)
     if not guard:
         return await _admin_forbidden()
     _, tg_id = guard
@@ -1477,8 +1431,11 @@ async def handle_admin_settings_windows(request: web.Request) -> web.Response:
     raise web.HTTPFound("/admin#settings")
 
 async def handle_logout(request: web.Request) -> web.Response:
+    sid = request.cookies.get("session_id")
+    if sid:
+        await delete_site_session(sid)
     response = web.HTTPFound("/")
-    response.del_cookie("session_id")
+    response.del_cookie("session_id", path="/", secure=config.WEB_COOKIE_SECURE)
     return response
 
 # ---------- вспомогательные ----------
@@ -1537,7 +1494,7 @@ async def api_plans(request: web.Request) -> web.Response:
         "addon": True,
     } for p in DEVICE_ADDONS]
     trial = dict(TRIAL) | {"price": 0, "free": True}
-    return web.json_response({"plans": plans, "addons": addons, "trial": trial, "stars_enabled": False})
+    return web.json_response({"plans": plans, "addons": addons, "trial": trial})
 
 
 async def api_create_payment(request: web.Request) -> web.Response:
@@ -1648,7 +1605,7 @@ async def handle_404(request: web.Request) -> web.Response:
       <p>Вернитесь на <a href="/">главную</a>.</p>
     </div>
     """
-    return web.Response(text=_page("404", body, _get_session(request)), status=404, content_type="text/html")
+    return web.Response(text=_page("404", body, await _get_session(request)), status=404, content_type="text/html")
 
 
 # ---------- приложение ----------
@@ -1666,7 +1623,7 @@ def make_app() -> web.Application:
     app = web.Application(middlewares=[no_cache_mw])
     # статика сайта (CSS/JS)
     app.router.add_static("/static/", path=os.path.join(os.path.dirname(__file__), "static"), name="static")
-    app.router.add_get("/", handle_spa)
+    app.router.add_get("/", handle_index)
     app.router.add_get("/plans", handle_plans)
     app.router.add_get("/register", handle_register_get)
     app.router.add_post("/register", handle_register_post)
@@ -1706,13 +1663,12 @@ def make_app() -> web.Application:
     # работал в браузере так же, как приложение в Telegram
     from webapp import (
         api_auth as webapp_api_auth, api_me, api_trial,
-        api_pay_yookassa, api_pay_stars, api_referrals, api_check_payment as webapp_check_payment,
+        api_pay_yookassa, api_referrals, api_check_payment as webapp_check_payment,
     )
     app.router.add_post("/api/auth", webapp_api_auth)
     app.router.add_get("/api/me", api_me)
     app.router.add_post("/api/trial", api_trial)
     app.router.add_post("/api/pay/yookassa", api_pay_yookassa)
-    app.router.add_post("/api/pay/stars", api_pay_stars)
     app.router.add_get("/api/referrals", api_referrals)
     app.router.add_post("/api/check_payment", webapp_check_payment)
     app.router.add_get("/api/auth/site", api_auth_site)
@@ -1725,12 +1681,12 @@ def make_app() -> web.Application:
 
 async def init_on_start(app: web.Application) -> None:
     await init_db()
-    # фоновая очистка протухших сессий сайта (иначе SESSIONS растёт бесконечно)
+    # Периодически удаляем истёкшие записи и ограничиваем число сессий.
     async def _sessions_janitor():
         while True:
             await asyncio.sleep(600)
             try:
-                _prune_sessions()
+                await _prune_sessions()
             except Exception:
                 log.exception("janitor: очистка сессий")
     app["_sessions_janitor_task"] = asyncio.create_task(_sessions_janitor())

@@ -98,6 +98,7 @@ docker compose up -d --build
 Особенности обвязки:
 
 - SQLite-база живёт в docker-томе (`wdtt-bot_bot-data:/app/data/bot.db`);
+- сессии сайта хранятся в этой же SQLite-базе, переживают перезапуск и общие для экземпляров, использующих один файл БД;
 - `docker-compose.yml` использует `network_mode: host` — webhook ЮKassa работает без внешнего порта-маппинга и нет конфликтов docker-сетей с панелью WDTT на том же VPS;
 - контейнер работает от непривилегированного пользователя;
 - `.env` не коммитится и содержит секреты — держите сервер под доступом.
@@ -135,8 +136,8 @@ docker compose up -d --build
 | `WEBAPP_ENABLED` | `true` — включить Telegram Mini App |
 | `WEBAPP_HOST` / `WEBAPP_PORT` | HTTP-сервер Mini App (по умолчанию `0.0.0.0:8082`) |
 | `MINIAPP_URL` | публичный HTTPS-URL приложения (напр. `https://app.yourdomain.com`) — без него бот покажет обычное меню |
-| `STARS_ENABLED` | `true` — принимать оплату Telegram Stars |
-| `STARS_RATE` | звёзд за 1 рубль (по умолчанию `1.0`, т.е. 100 ₽ = 100 ⭐) |
+| `WEB_PORT` / `SITE_URL` | порт сайта (8080) и его публичный HTTPS-адрес (например, `https://auth.yourdomain.com`) |
+| `WEB_COOKIE_SECURE` | `true` — cookie сайта доступны только через HTTPS (по умолчанию); для локальной разработки по HTTP задайте `false` |
 
 Тарифы по умолчанию (100 ₽ / 30 дн, 300 ₽ / 90 дн, 600 ₽ / 180 дн, 1200 ₽ / 365 дн; трафик безлимит, до 3 устройств) задаются в `plans.py` и редактируются из админки.
 
@@ -159,6 +160,10 @@ docker compose up -d --build
 ## Telegram Mini App (веб-приложение внутри Telegram)
 
 Вместо чата с кнопками пользователи открывают полноценное приложение (тёмная тема Telegram).
+Публичный сайт (`SITE_URL`) и Mini App (`MINIAPP_URL`) работают на разных портах:
+направьте домен сайта на `WEB_PORT` (8080), а домен Mini App — на `WEBAPP_PORT` (8082).
+Главная сайта показывает обычную страницу с тарифами и входом; Mini App открывается
+в Telegram и использует Telegram WebApp `initData`.
 
 1. **BotFather** → `/mybots` → ваш бот → **Menu Button** → **Configure menu button** → выберите **Web App** и укажите `MINIAPP_URL` (или оставьте кнопку в `/start` — бот отправит «🚀 Открыть приложение»).
 2. В `.env`:
@@ -166,14 +171,17 @@ docker compose up -d --build
    WEBAPP_ENABLED=true
    WEBAPP_PORT=8082
    MINIAPP_URL=https://app.yourdomain.com
-   STARS_ENABLED=true
-   STARS_RATE=1.0
    ```
 3. **nginx/caddy** проксирует `https://app.yourdomain.com` → `127.0.0.1:8082` (HTTPS обязателен, Telegram не открывает http).
-4. Оплата: ЮKassa (как раньше, через редирект) **и** Telegram Stars (`create_invoice_link`, `currency=XTR`). Бот обрабатывает `pre_checkout_query` и `successful_payment` и выдаёт доступ.
+4. Оплата — ЮKassa с переходом на страницу подтверждения платежа.
 5. Auth в приложении — валидация `initData` (HMAC-SHA256 по токену бота), сессия 7 дней.
 
-API для фронтенда: `POST /api/auth`, `GET /api/me`, `GET /api/plans`, `POST /api/trial`, `POST /api/pay/yookassa`, `POST /api/pay/stars`, `GET /api/referrals`, `POST /api/check_payment`.
+Вход на сайт по email/паролю и вход через Telegram работают независимо. После явной
+привязки Telegram к аккаунту сайта сайт и Mini App используют общий профиль подписки.
+Если у обоих аккаунтов уже есть отдельные подписки, платежи или пробный период,
+привязка останавливается без переноса данных — аккаунты должен проверить администратор.
+
+API для фронтенда: `POST /api/auth`, `GET /api/me`, `GET /api/plans`, `POST /api/trial`, `POST /api/pay/yookassa`, `GET /api/referrals`, `POST /api/check_payment`.
 
 ## Мобильные приложения (Android / iOS)
 

@@ -88,7 +88,6 @@ async def api_auth(request: web.Request) -> web.Response:
             "first_name": user.get("first_name", ""),
             "username": user.get("username", ""),
         },
-        "stars_enabled": False,
         "minapp_url": config.MINIAPP_URL,
     })
 
@@ -161,7 +160,7 @@ async def api_plans(request: web.Request) -> web.Response:
             "max_devices": p.get("max_devices", 1), "description": p.get("description", ""),
             "addon": True,
         })
-    return web.json_response({"plans": out, "addons": addons, "trial": TRIAL, "stars_enabled": False})
+    return web.json_response({"plans": out, "addons": addons, "trial": TRIAL})
 
 
 async def api_trial(request: web.Request) -> web.Response:
@@ -210,15 +209,6 @@ async def api_pay_yookassa(request: web.Request) -> web.Response:
         )
     await add_payment(uid, username, p["id"], plan["id"], f"{float(plan['price']):.2f}")
     return web.json_response({"url": p["url"], "payment_id": p["id"]})
-
-
-async def api_pay_stars(request: web.Request) -> web.Response:
-    """Оплата Telegram Stars в мини-приложении отключена.
-
-    Инвойсы Stars выдаёт только бот (кнопка в чате) — в мини-приложении
-    доступна оплата картой/СБП через ЮKassa.
-    """
-    return web.json_response({"error": "stars disabled"}, status=400)
 
 
 async def api_referrals(request: web.Request) -> web.Response:
@@ -281,7 +271,6 @@ def make_webapp() -> web.Application:
     app.router.add_get("/api/plans", api_plans)
     app.router.add_post("/api/trial", api_trial)
     app.router.add_post("/api/pay/yookassa", api_pay_yookassa)
-    app.router.add_post("/api/pay/stars", api_pay_stars)
     app.router.add_get("/api/referrals", api_referrals)
     app.router.add_post("/api/check_payment", api_check_payment)
 

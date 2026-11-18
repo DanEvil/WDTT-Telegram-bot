@@ -157,8 +157,13 @@ async def test_profile_has_no_payment_history(monkeypatch):
     async def _site_ref_count(uid):
         return 0
 
-    monkeypatch.setattr(web_app, "_get_site_session", lambda request: {
-        "site_user_id": 1, "telegram_id": 424242, "email": None, "username": "u", "created": time.time()})
+    async def _site_session(request):
+        return {
+            "site_user_id": 1, "telegram_id": 424242, "email": None,
+            "username": "u", "created": time.time(),
+        }
+
+    monkeypatch.setattr(web_app, "_get_site_session", _site_session)
     monkeypatch.setattr(web_app, "init_db", _noop)
     monkeypatch.setattr(web_app, "db_conn", lambda: _FakeConn())
     monkeypatch.setattr(web_app, "get_customer", _get_customer)
@@ -183,6 +188,23 @@ async def test_site_instruction_lists_devices():
     assert "PWDTT" in resp.text
     assert "🪟" in resp.text
     assert "Открыть бота" not in resp.text
+
+
+async def test_public_root_serves_site_landing_page():
+    """Корень сайта показывает публичную главную, а не Telegram-only Mini App."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    client = TestClient(TestServer(web_app.make_app()))
+    await client.start_server()
+    try:
+        response = await client.get("/")
+        body = await response.text()
+        assert response.status == 200
+        assert "Выбрать тариф" in body
+        assert 'href="/plans"' in body
+        assert 'id="app"' not in body
+    finally:
+        await client.close()
 
 
 async def test_site_instruction_device_has_screenshots():
@@ -226,4 +248,3 @@ async def test_site_nav_has_instruction_tab():
     assert 'class="nav"' in resp.text
     assert "Инструкция" in resp.text
     assert 'href="/instruction"' in resp.text
-
