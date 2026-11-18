@@ -126,14 +126,20 @@ async def test_site_trial_issues_vk_hashes_via_bot_ensure(monkeypatch):
 
     monkeypatch.setattr(web_app, "init_db", _noop)
     async def _require_session(req):
-        return {"site_user_id": 5, "telegram_id": 4242, "username": "u"}
+        return {"site_user_id": 5, "telegram_id": None, "username": "u"}
 
     monkeypatch.setattr(web_app, "_require_site_session", _require_session)
 
     async def _claim(sub_id):
+        seen["trial_uid"] = sub_id
         return True
 
     monkeypatch.setattr(web_app, "claim_trial", _claim)
+
+    async def _upsert_customer(uid, *args, **kwargs):
+        seen["customer_uid"] = uid
+
+    monkeypatch.setattr(web_app, "upsert_customer", _upsert_customer)
 
     async def _pick():
         return 7
@@ -145,8 +151,6 @@ async def test_site_trial_issues_vk_hashes_via_bot_ensure(monkeypatch):
                 "username": "adm", "password": "p", "verify_ssl": False}
 
     monkeypatch.setattr(web_app, "get_server", _get_server)
-    monkeypatch.setattr(web_app, "upsert_customer", _noop)
-
     class FakeWdtt:
         def __init__(self, *a, **kw):
             pass
@@ -171,6 +175,94 @@ async def test_site_trial_issues_vk_hashes_via_bot_ensure(monkeypatch):
     resp = await web_app.handle_buy(Req())
     assert resp.status == 200
     assert seen.get("ensure") == ("pw123", 7, None)
+    assert seen.get("trial_uid") == -5
+    assert seen.get("customer_uid") == -5
+
+
+async def test_site_trial_releases_claim_when_no_server_is_available(monkeypatch):
+    seen = {}
+
+    async def _noop(*a, **kw):
+        return None
+
+    async def _require_session(req):
+        return {"site_user_id": 6, "telegram_id": None, "username": "new-user"}
+
+    async def _claim(uid):
+        seen["claimed"] = uid
+        return True
+
+    async def _release(uid):
+        seen["released"] = uid
+
+    async def _no_server():
+        return None
+
+    monkeypatch.setattr(web_app, "init_db", _noop)
+    monkeypatch.setattr(web_app, "_require_site_session", _require_session)
+    monkeypatch.setattr(web_app, "claim_trial", _claim)
+    monkeypatch.setattr(web_app, "release_trial", _release)
+    monkeypatch.setattr(web_app, "pick_least_loaded_server_id", _no_server)
+
+    class Req:
+        match_info = {"plan_id": "trial"}
+
+    resp = await web_app.handle_buy(Req())
+    assert resp.status == 200
+    assert "Нет свободных серверов" in resp.text
+    assert seen == {"claimed": -6, "released": -6}
+
+
+async def test_site_trial_releases_claim_when_panel_login_fails(monkeypatch):
+    seen = {}
+
+    async def _noop(*a, **kw):
+        return None
+
+    async def _require_session(req):
+        return {"site_user_id": 7, "telegram_id": None, "username": "new-user"}
+
+    async def _claim(uid):
+        seen["claimed"] = uid
+        return True
+
+    async def _release(uid):
+        seen["released"] = uid
+
+    async def _pick_server():
+        return 12
+
+    async def _get_server(server_id):
+        return {
+            "id": server_id,
+            "base_url": "https://panel.test:2860/wdtt",
+            "username": "adm",
+            "password": "p",
+            "verify_ssl": False,
+        }
+
+    class FailedLoginWdtt:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def login(self):
+            raise RuntimeError("panel unavailable")
+
+    monkeypatch.setattr(web_app, "init_db", _noop)
+    monkeypatch.setattr(web_app, "_require_site_session", _require_session)
+    monkeypatch.setattr(web_app, "claim_trial", _claim)
+    monkeypatch.setattr(web_app, "release_trial", _release)
+    monkeypatch.setattr(web_app, "pick_least_loaded_server_id", _pick_server)
+    monkeypatch.setattr(web_app, "get_server", _get_server)
+    monkeypatch.setattr(web_app, "WdttClient", FailedLoginWdtt)
+
+    class Req:
+        match_info = {"plan_id": "trial"}
+
+    resp = await web_app.handle_buy(Req())
+    assert resp.status == 200
+    assert "panel unavailable" in resp.text
+    assert seen == {"claimed": -7, "released": -7}
 
 
 # ---------- админ-API: POST /api/v1/admin/backfill-vk ----------

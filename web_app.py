@@ -45,7 +45,7 @@ from server_select import pick_least_loaded_server_id
 from db import (
     conn as db_conn, init_db, get_customer, upsert_customer,
     add_payment, get_payment, list_payments, get_plan, list_plans,
-    claim_trial, list_servers, stats, get_server, server_active_counts,
+    claim_trial, release_trial, list_servers, stats, get_server, server_active_counts,
     get_referrals_count, get_site_user_by_email,
     generate_referral_code, add_site_referral, get_site_referrals_count,
     get_site_user_by_referral_code,
@@ -931,6 +931,7 @@ async def handle_buy(request: web.Request) -> web.Response:
         try:
             sid = await pick_least_loaded_server_id()
             if not sid:
+                await release_trial(sub_id)
                 return web.Response(text=_page("Ошибка", "<p class='err'>Нет свободных серверов WDTT (все заполнены до лимита). Обратитесь к администратору.</p>"))
             server = await get_server(sid)
             client = WdttClient(server["base_url"], server["username"], server["password"], verify_ssl=bool(server["verify_ssl"]))
@@ -961,6 +962,7 @@ async def handle_buy(request: web.Request) -> web.Response:
             <a href="/profile">В профиль</a>
             """, session), content_type="text/html")
         except Exception as e:
+            await release_trial(sub_id)
             log.exception("ошибка выдачи пробного периода через веб")
             return web.Response(text=_page("Ошибка", f"<p class='err'>Не удалось создать пробный период: {html.escape(str(e))}</p>"))
 
