@@ -784,10 +784,13 @@ async def h_me(request: web.Request) -> web.Response:
 
 
 async def h_vless_links(request: web.Request) -> web.Response:
-    """GET /api/v1/vless-links — VLESS ссылки для новых пользователей (не в базе).
-    
-    Не требует авторизации — используется для первого подключения по VLESS ссылке.
+    """GET /api/v1/vless-links — VLESS ссылка для подключения.
+
+    Требует авторизации: VLESS-ссылка — общий на всех клиентов доступ,
+    отдавать её анонимным GET нельзя. Свою подписку клиент получает
+    через /api/v1/me (links.vless).
     """
+    user_id_from_request(request)  # 401 без валидного Bearer-токена
     import bot as b  # lazy: избегаем циклического импорта
     links = b.get_vless_only_links()
     return web.json_response({"vless": links.get("vless")})
