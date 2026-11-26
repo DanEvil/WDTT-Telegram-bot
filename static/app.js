@@ -403,7 +403,7 @@
     const p = ((data && data.platforms) || []).find((x) => x.key === key);
     if (!p) return helpHtml();
     return `<button class="btn secondary" data-back>← Назад к выбору устройства</button>` +
-      headHtml(p.title, (data && data.intro) || `Подключение к ${window.__brand || 'K.O. Gateway'}`) +
+      headHtml(p.title, (data && (data.intro_plain || data.intro)) || `Подключение к ${window.__brand || 'K.O. Gateway'}`) +
       `<div class="card"><h3>${esc(p.title)}</h3>
         <p>${p.intro}</p>${platformLinksHtml(p)}${platformStepsHtml(p)}</div>`;
   }

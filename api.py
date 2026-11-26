@@ -912,6 +912,7 @@ async def h_instructions(request: web.Request) -> web.Response:
         })
     return web.json_response({
         "intro": instr.INTRO,
+        "intro_plain": instr.INTRO_PLAIN,
         "platforms": platforms,
     })
 

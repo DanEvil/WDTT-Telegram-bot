@@ -1166,7 +1166,7 @@ async def handle_instruction_device(request: web.Request) -> web.Response:
     """
     return web.Response(
         text=_page(p["title"], body, await _get_session(request), active="Инструкция",
-                   subtitle=instr.INTRO),
+                   subtitle=instr.INTRO_PLAIN),
         content_type="text/html",
     )
 
