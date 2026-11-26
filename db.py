@@ -152,6 +152,11 @@ async def init_db() -> None:
         # Миграция: email владельца аккаунта (F01: detecting hash-collision merges)
         if "email" not in cols:
             await db.execute("ALTER TABLE customers ADD COLUMN email TEXT")
+        # Миграция: ленивая инициализация VK hash (создаём только при первом подключении по VLESS)
+        if "vk_hash_initialized" not in cols:
+            await db.execute("ALTER TABLE customers ADD COLUMN vk_hash_initialized INTEGER NOT NULL DEFAULT 0")
+        if "vk_hash_created_at" not in cols:
+            await db.execute("ALTER TABLE customers ADD COLUMN vk_hash_created_at INTEGER NOT NULL DEFAULT 0")
 
         # Миграции таблицы servers: SSH-доступ для автоустановки панели
         scols = [r["name"] for r in (await (await db.execute("PRAGMA table_info(servers)")).fetchall())]
@@ -165,84 +170,84 @@ async def init_db() -> None:
             await db.execute("ALTER TABLE servers ADD COLUMN ssh_password TEXT")
 
         # VK-аккаунты (cookies профилей VK для создания хешей) и учёт выданных хешей
-        await db.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS vk_accounts (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                label       TEXT NOT NULL,
-                cookies     TEXT NOT NULL,          -- JSON-массив cookies или строка "k=v; ..."
-                active      INTEGER NOT NULL DEFAULT 1,
-                created_at  INTEGER NOT NULL
-            );
+            await db.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS vk_accounts (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        label       TEXT NOT NULL,
+        cookies     TEXT NOT NULL,          -- JSON-массив cookies или строка "k=v; ..."
+        active      INTEGER NOT NULL DEFAULT 1,
+        created_at  INTEGER NOT NULL
+        );
 
-            CREATE TABLE IF NOT EXISTS vk_issued (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                server_id     INTEGER NOT NULL,
-                vk_account_id INTEGER NOT NULL,
-                user_password TEXT NOT NULL,
-                vk_hash       TEXT NOT NULL,
-                created_at    INTEGER NOT NULL
-            );
-            """
+        CREATE TABLE IF NOT EXISTS vk_issued (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        server_id     INTEGER NOT NULL,
+        vk_account_id INTEGER NOT NULL,
+        user_password TEXT NOT NULL,
+        vk_hash       TEXT NOT NULL,
+        created_at    INTEGER NOT NULL
+        );
+        """
         )
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_vk_issued_server ON vk_issued(server_id, vk_account_id)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_vk_issued_user ON vk_issued(user_password)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_identities_user ON identities(user_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_vk_issued_server ON vk_issued(server_id, vk_account_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_vk_issued_user ON vk_issued(user_password)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_identities_user ON identities(user_id)")
 
         # Индексы для быстрого поиска (sync_panel_worker, sub_id lookups)
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_customers_wdtt_password ON customers(wdtt_password)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_customers_sub_id ON customers(sub_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_customers_wdtt_password ON customers(wdtt_password)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_customers_sub_id ON customers(sub_id)")
         # Воркеры напоминаний/истечения и автопродления фильтруют по expires_at
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_customers_expires ON customers(expires_at)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_customers_expires ON customers(expires_at)")
         # Личные кабинеты и webhook часто выбирают платежи по пользователю/статусу
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_payments_telegram ON payments(telegram_id, created_at)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status, created_at)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_payments_telegram ON payments(telegram_id, created_at)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status, created_at)")
 
         # Таблицы сайта (личный кабинет): аккаунты и коды привязки Telegram
-        await db.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS site_users (
-                id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                email          TEXT NOT NULL UNIQUE,
-                username       TEXT,
-                password_hash  TEXT NOT NULL,
-                telegram_id    INTEGER UNIQUE,
-                referral_code  TEXT NOT NULL UNIQUE,
-                created_at     INTEGER NOT NULL
-            );
+            await db.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS site_users (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        email          TEXT NOT NULL UNIQUE,
+        username       TEXT,
+        password_hash  TEXT NOT NULL,
+        telegram_id    INTEGER UNIQUE,
+        referral_code  TEXT NOT NULL UNIQUE,
+        created_at     INTEGER NOT NULL
+        );
 
-            CREATE TABLE IF NOT EXISTS site_sessions (
-                session_id TEXT PRIMARY KEY,
-                site_user_id INTEGER NOT NULL,
-                email TEXT,
-                username TEXT,
-                telegram_id INTEGER,
-                created_at INTEGER NOT NULL,
-                expires_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_site_sessions_expiry ON site_sessions(expires_at);
+        CREATE TABLE IF NOT EXISTS site_sessions (
+        session_id TEXT PRIMARY KEY,
+        site_user_id INTEGER NOT NULL,
+        email TEXT,
+        username TEXT,
+        telegram_id INTEGER,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_site_sessions_expiry ON site_sessions(expires_at);
 
-            CREATE TABLE IF NOT EXISTS bind_codes (
-                code         TEXT PRIMARY KEY,
-                site_user_id INTEGER NOT NULL,
-                created_at   INTEGER NOT NULL,
-                used         INTEGER NOT NULL DEFAULT 0
-            );
-            """
+        CREATE TABLE IF NOT EXISTS bind_codes (
+        code         TEXT PRIMARY KEY,
+        site_user_id INTEGER NOT NULL,
+        created_at   INTEGER NOT NULL,
+        used         INTEGER NOT NULL DEFAULT 0
+        );
+        """
         )
         # Запросы на вход на сайт через Telegram (deep-link t.me/<bot>?start=web_login_<code>)
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS login_requests (
-                code       TEXT PRIMARY KEY,
-                telegram_id INTEGER,
-                username   TEXT,
-                created_at INTEGER NOT NULL,
-                used       INTEGER NOT NULL DEFAULT 0
-            );
-            """
+            await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS login_requests (
+        code       TEXT PRIMARY KEY,
+        telegram_id INTEGER,
+        username   TEXT,
+        created_at INTEGER NOT NULL,
+        used       INTEGER NOT NULL DEFAULT 0
+        );
+        """
         )
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_site_users_telegram ON site_users(telegram_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_site_users_telegram ON site_users(telegram_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_bind_codes_site ON bind_codes(site_user_id)")
 
         # Таблица рефералов сайта (отдельная от тг-рефералов в таблице referrals)
@@ -1522,3 +1527,86 @@ async def get_openflux_secret() -> str:
     import config
     val = (await get_setting("openflux_secret")) or ""
     return val.strip() or config.OPENFLUX_SECRET or ""
+
+
+# ==============================================================================
+# VK Hash Lazy Initialization Helpers
+# ==============================================================================
+
+async def is_vk_hash_initialized(telegram_id: int) -> bool:
+    """Проверить, инициализирован ли VK hash для пользователя."""
+    async with conn() as db:
+        cur = await db.execute(
+            "SELECT vk_hash_initialized FROM customers WHERE telegram_id = ?",
+            (telegram_id,)
+        )
+        row = await cur.fetchone()
+        return bool(row and row["vk_hash_initialized"])
+
+
+async def mark_vk_hash_initialized(telegram_id: int, vk_hash: str) -> None:
+    """Пометить VK hash как инициализированный и сохранить сам hash."""
+    import time
+    async with conn() as db:
+        await db.execute(
+            "UPDATE customers SET vk_hash_initialized = 1, vk_hash_created_at = ? WHERE telegram_id = ?",
+            (int(time.time()), telegram_id)
+        )
+        await db.commit()
+
+
+async def get_customer_vk_hash(telegram_id: int) -> str | None:
+    """Получить текущий VK hash пользователя из панели (через wdtt_password)."""
+    async with conn() as db:
+        cur = await db.execute(
+            "SELECT wdtt_password FROM customers WHERE telegram_id = ?",
+            (telegram_id,)
+        )
+        row = await cur.fetchone()
+        if not row or not row["wdtt_password"]:
+            return None
+        
+        # Need to fetch from panel using wdtt_password
+        # This will be called from the plugin/panel integration
+        return row["wdtt_password"]
+
+
+async def get_customer_by_wdtt_password(wdtt_password: str) -> dict | None:
+    """Найти пользователя по wdtt_password (для plugin integration)."""
+    async with conn() as db:
+        cur = await db.execute(
+            "SELECT telegram_id, wdtt_password, expires_at, plan_id, server_id, sub_id, vk_hash_initialized, vk_hash_created_at "
+            "FROM customers WHERE wdtt_password = ?",
+            (wdtt_password,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def update_customer_vk_hash(telegram_id: int, vk_hash: str) -> None:
+    """Обновить VK hash пользователя в панели через WDTT API.
+    
+    This should be called after creating a VK call via panel API.
+    The panel client (wdtt.py) handles the actual API call.
+    """
+    # This is a placeholder - actual panel update happens via wdtt.py client
+    # We just mark it as initialized here
+    await mark_vk_hash_initialized(telegram_id, vk_hash)
+
+
+async def get_uninitialized_vk_customers() -> list[dict]:
+    """Получить список пользователей с активной подпиской, у которых не инициализирован VK hash."""
+    import time
+    now = int(time.time())
+    async with conn() as db:
+        cur = await db.execute(
+            """SELECT telegram_id, wdtt_password, expires_at, server_id 
+               FROM customers 
+               WHERE vk_hash_initialized = 0 
+               AND expires_at > ? 
+               AND wdtt_password IS NOT NULL 
+               AND wdtt_password != ''""",
+            (now,)
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]

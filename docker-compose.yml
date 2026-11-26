@@ -1,29 +1,74 @@
+version: '3.8'
+
 services:
+  # ============================================================
+  # TELEGRAM BOT (main service)
+  # ============================================================
   wdtt-bot:
     build: .
     container_name: wdtt-bot
     restart: unless-stopped
-    # Сеть хоста: не создаём собственный bridge — на VPS, где рядом работают
-    # VPN-туннели/панель WDTT, новая docker-сеть может конфликтовать с их
-    # маршрутами и ронять трафик.
     network_mode: host
     env_file:
       - .env
     environment:
       DB_PATH: /app/data/bot.db
     volumes:
-      # база SQLite живёт в named-томе и переживает пересоздание контейнера
       - bot-data:/app/data
-    # Ротация логов: json-file без лимита съедал бы диск (сервер 10 ГБ)
     logging:
       driver: json-file
       options:
         max-size: "20m"
         max-file: "5"
+    depends_on:
+      - vk-hash-service
+    command: >
+      sh -c "python migrate_vk_hash.py && python bot.py"
 
-# Порт нужен ТОЛЬКО если WEBHOOK_ENABLED=true (webhook ЮKassa).
-# В network_mode: host секция ports не используется: контейнер сам слушает
-# WEBHOOK_PORT на хосте — убедитесь, что этот порт свободен.
+  # ============================================================
+  # VK HASH LAZY INITIALIZATION SERVICE
+  # ============================================================
+  vk-hash-service:
+    build: .
+    container_name: wdtt-vk-hash-service
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      DB_PATH: /app/data/bot.db
+      VK_HASH_SERVICE_PORT: "8083"
+      VK_HASH_SERVICE_HOST: "0.0.0.0"
+    volumes:
+      - bot-data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command: python vk_hash_service.py
+
+  # ============================================================
+  # REDIS (for caching, sessions, subscription proxy)
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    container_name: wdtt-redis
+    restart: unless-stopped
+    network_mode: host
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
 
 volumes:
   bot-data:
+  redis-data:
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt

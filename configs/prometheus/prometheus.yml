@@ -1,0 +1,61 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files: []
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Xray metrics
+  - job_name: 'xray'
+    static_configs:
+      - targets: ['xray:10085']
+    metrics_path: /metrics
+
+  # Bot metrics
+  - job_name: 'bot'
+    static_configs:
+      - targets: ['bot:8080']
+    metrics_path: /metrics
+
+  # WDTT Panel
+  - job_name: 'wdtt-panel'
+    static_configs:
+      - targets: ['wdtt-panel:2860']
+    metrics_path: /metrics
+
+  # OpenFlux (if metrics endpoint available)
+  - job_name: 'openflux'
+    static_configs:
+      - targets: ['openflux:56004']
+    metrics_path: /metrics
+
+  # Node Exporter (host metrics)
+  - job_name: 'node'
+    static_configs:
+      - targets: ['host.docker.internal:9100']
+
+  # Redis
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+
+  # PostgreSQL
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['db:5432']
+
+  # Nginx
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx:80']
+    metrics_path: /nginx_status

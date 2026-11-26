@@ -1,0 +1,37 @@
+# ============================================================
+# DOCKERFILE FOR XRAY WITH WDTT PLUGIN
+# ============================================================
+FROM golang:1.23-alpine AS plugin-builder
+
+WORKDIR /build
+COPY plugin/ /build/
+RUN go build -trimpath -ldflags="-s -w" -o wdtt-outbound .
+
+FROM golang:1.23-alpine AS xray-builder
+
+ARG XRAY_VERSION=v1.8.10
+WORKDIR /build
+RUN apk add --no-cache git make gcc musl-dev
+RUN git clone --depth 1 --branch v1.8.10 https://github.com/XTLS/Xray-core.git .
+RUN go build -tags=plugin -ldflags="-s -w -X github.com/xtls/xray-core/app/proxyman/command.VERSION=v1.8.10" -o xray ./main
+
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates tzdata iptables iproute2
+
+# Install Xray
+COPY --from=xray-builder /build/xray /usr/local/bin/xray
+
+# Install WDTT plugin
+COPY --from=plugin-builder /build/wdtt-outbound /usr/local/bin/wdtt-outbound
+RUN mkdir -p /usr/local/share/xray/plugins && cp /usr/local/bin/wdtt-outbound /usr/local/share/xray/plugins/wdtt-outbound
+
+# Create directories
+RUN mkdir -p /etc/xray /etc/xray/plugins /var/log/xray
+
+# Plugin config will be mounted
+ENV XRAY_PLUGIN_CONFIG=/etc/xray/plugin-config.json
+
+EXPOSE 443 10085 10086
+
+ENTRYPOINT ["xray", "run", "-config", "/etc/xray/config.json"]

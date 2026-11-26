@@ -145,6 +145,19 @@ SUB_PATH = os.getenv("SUB_PATH", "/sub/").strip()  # путь для подпи�
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0").strip()
 REDIS_SUB_TTL = _as_int("REDIS_SUB_TTL", 86400 * 30)  # TTL записи в секундах (30 дней)
 
+# VLESS Configuration (xhttp)
+VLESS_ENABLED = _as_bool("VLESS_ENABLED", True)
+VLESS_SERVER = os.getenv("VLESS_SERVER", "").strip()  # VLESS server address (domain or IP)
+VLESS_PORT = _as_int("VLESS_PORT", 443)
+VLESS_UUID = os.getenv("VLESS_UUID", "").strip()  # UUID for VLESS users (can be same or per-user)
+VLESS_PROTOCOL = os.getenv("VLESS_PROTOCOL", "xhttp").strip()  # xhttp, tcp, ws, grpc
+VLESS_TLS = _as_bool("VLESS_TLS", True)
+VLESS_PATH = os.getenv("VLESS_PATH", "/xhttp").strip()  # xhttp path
+VLESS_HOST = os.getenv("VLESS_HOST", "").strip()  # Host header for xhttp
+VLESS_FINGERPRINT = os.getenv("VLESS_FINGERPRINT", "chrome").strip()
+VLESS_ALPN = os.getenv("VLESS_ALPN", "h2,http/1.1").strip()
+VLESS_REMARK = os.getenv("VLESS_REMARK", "K.O. Gateway VLESS xhttp").strip()
+
 
 def _duplicate_port_errors(ports: dict[str, int]) -> list[str]:
     """Ошибки о совпадающих портах (все HTTP-серверы живут в одном процессе)."""

@@ -1,0 +1,14 @@
+{
+  "apiVersion": 1,
+  "providers": [
+    {
+      "name": "WDTT Dashboards",
+      "orgId": 1,
+      "folder": "WDTT",
+      "type": "file",
+      "options": {
+        "path": "/etc/grafana/provisioning/dashboards"
+      }
+    }
+  ]
+}

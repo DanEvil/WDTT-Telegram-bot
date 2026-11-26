@@ -1,388 +1,213 @@
 #!/bin/bash
-# Развёртывание WDTT-бота в Docker на Linux-сервере (VPS).
-# Запуск:    sudo ./deploy.sh            (REPO_URL можно переопределить: REPO_URL=... ./deploy.sh)
-# Настройки: sudo ./deploy.sh --configure   (открыть окно настроек позже)
-# Без вопросов: NONINTERACTIVE=1 ./deploy.sh  (требуется готовый .env)
-set -e
+# ============================================================
+# WDTT VPN DEPLOYMENT SCRIPT
+# ============================================================
+# This script deploys the complete WDTT VPN stack:
+# - Xray with WDTT Plugin
+# - Telegram Bot
+# - WDTT Panel
+# - OpenFlux Exit Node
+# - PostgreSQL, Redis, Nginx, Prometheus, Grafana
+# ============================================================
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/wdtt-bot}"
-REPO_URL="${REPO_URL:-https://github.com/DanEvil/WDTT-Telegram-bot.git}"
-BRANCH="${BRANCH:-main}"
-CONFIGURE_ONLY=0
-[ "${1:-}" = "--configure" ] && CONFIGURE_ONLY=1
+set -euo pipefail
 
-COMPOSE=""
-DETECTED_COMPOSE=0
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-detect_compose() {
-    if docker compose version >/dev/null 2>&1; then
-        COMPOSE="docker compose"
-    elif command -v docker-compose >/dev/null 2>&1; then
-        COMPOSE="docker-compose"
-    else
-        return 1
-    fi
-    DETECTED_COMPOSE=1
-    return 0
-}
+log_info() { echo -e "${BLUE}[INFO]${NC} $*"; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $*"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
-# ---------- окно настроек ----------
+# Configuration
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BUILD_DIR="${PROJECT_ROOT}/build"
+COMPOSE_FILE="${PROJECT_ROOT}/docker-compose.yml"
 
-# значение KEY из существующего .env (пусто, если файла/ключа нет)
-env_val() {
-    [ -f "$PROJECT_DIR/.env" ] && grep -E "^$1=" "$PROJECT_DIR/.env" | head -n1 | cut -d= -f2-
-}
-
-WT_GUI=0
-setup_ui() {
-    if command -v whiptail >/dev/null 2>&1 && [ -t 0 ] && [ -t 1 ]; then
-        WT_GUI=1
-    else
-        WT_GUI=0
-    fi
-}
-
-# wt_input TITLE DEFAULT REQUIRED(bool) MASKED(bool) -> вывод: значение
-wt_input() {
-    local title="$1" def="$2" req="$3" mask="$4" val=""
-    while :; do
-        if [ "$WT_GUI" = "1" ]; then
-            local opts=(--title "Настройки WDTT-бота" --backtitle "Установка WDTT-бота")
-            if [ "$mask" = "1" ]; then
-                val=$(whiptail "${opts[@]}" --passwordbox "  $title" 9 66 "$def" 3>&1 1>&2 2>&3)
-            else
-                val=$(whiptail "${opts[@]}" --inputbox "  $title" 9 66 "$def" 3>&1 1>&2 2>&3)
-            fi
-            local rc=$?
-            if [ $rc -ne 0 ]; then
-                echo "Настройки прерваны." >&2
-                exit 1
-            fi
-        else
-            local hint=""
-            [ -n "$def" ] && hint=" [$def]"
-            if [ "$mask" = "1" ]; then
-                read -rp "$title (скрытый ввод)$hint: " val
-                [ -z "$val" ] && val="$def"
-            else
-                read -rp "$title$hint: " val
-            fi
-        fi
-        if [ "$req" = "1" ] && [ -z "$val" ]; then
-            if [ "$WT_GUI" = "1" ]; then
-                whiptail --title "Настройки WDTT-бота" --msgbox "  Обязательное поле, введите значение." 8 60
-            else
-                echo "Ошибка: это поле обязательно." >&2
-            fi
-            continue
-        fi
-        printf '%s' "$val"
-        return 0
-    done
-}
-
-# wt_confirm TITLE -> 0 (да) / 1 (нет)
-wt_confirm() {
-    if [ "$WT_GUI" = "1" ]; then
-        whiptail --title "Настройки WDTT-бота" --yesno "  $1" 9 66
-        return $?
-    fi
-    read -rp "$1 [Y/n]: " a
-    case "${a,,}" in n|no) return 1 ;; *) return 0 ;; esac
-}
-
-run_settings_wizard() {
-    setup_ui
-    cd "$PROJECT_DIR"
-
-    # $2 = переменная .env, $3 = значение по умолчанию
-    def() {
-        local x
-        x=$(env_val "$2")
-        printf '%s' "${x:-$3}"
-    }
-
-    local token admin_ids yk_shop yk_secret return_url wdtt_url wdtt_user wdtt_pass webhook_enabled webhook_port
-    token=$(wt_input "TELEGRAM_BOT_TOKEN — токен бота от @BotFather:" "$(def x TELEGRAM_BOT_TOKEN)" 1 0)
-    admin_ids=$(wt_input "ADMIN_IDS — Telegram ID администраторов через запятую:" "$(def x ADMIN_IDS)" 1 0)
-    yk_shop=$(wt_input "YOOKASSA_SHOP_ID — ID магазина в ЮKassa:" "$(def x YOOKASSA_SHOP_ID)" 1 0)
-    yk_secret=$(wt_input "YOOKASSA_SECRET_KEY — секретный ключ ЮKassa (sk_...):" "$(def x YOOKASSA_SECRET_KEY)" 1 1)
-    return_url=$(wt_input "RETURN_URL — куда ведёт чек «оплатить» (например, https://t.me/YourBot):" "$(def x RETURN_URL https://t.me/YourBot)" 1 0)
-    wdtt_url=$(wt_input "WDTT_BASE_URL — адрес панели WDTT (например, https://1.2.3.4:2860/wdtt):" "$(def x WDTT_BASE_URL)" 1 0)
-    wdtt_user=$(wt_input "WDTT_USERNAME — логин панели:" "$(def x WDTT_USERNAME)" 1 0)
-    wdtt_pass=$(wt_input "WDTT_PASSWORD — пароль панели:" "$(def x WDTT_PASSWORD)" 1 1)
-    webhook_enabled=$(wt_input "WEBHOOK_ENABLED — платить через webhook? false/true:" "$(def x WEBHOOK_ENABLED false)" 1 0)
-    webhook_port=$(wt_input "WEBHOOK_PORT — порт webhook (нужно только при true, не 8080/8081/8082):" "$(def x WEBHOOK_PORT 8090)" 0 0)
-
-    local summary
-    summary=$'Проверьте введённые данные:\n'
-    summary+="TELEGRAM_BOT_TOKEN: ${token:0:8}***"$'\n'
-    summary+="ADMIN_IDS: $admin_ids"$'\n'
-    summary+="YOOKASSA_SHOP_ID: $yk_shop"$'\n'
-    summary+="YOOKASSA_SECRET_KEY: ${yk_secret:0:3}***"$'\n'
-    summary+="RETURN_URL: $return_url"$'\n'
-    summary+="WDTT_BASE_URL: $wdtt_url"$'\n'
-    summary+="WDTT_USERNAME: $wdtt_user"$'\n'
-    summary+="WDTT_PASSWORD: ${wdtt_pass:0:1}***"$'\n'
-    summary+="WEBHOOK_ENABLED: $webhook_enabled"$'\n'
-    summary+="WEBHOOK_PORT: $webhook_port"
-
-    if ! wt_confirm "$summary"; then
-        echo "Сохранение отменено — настройки не изменены." >&2
-        return 1
-    fi
-
-    cat <<EOF > "$PROJECT_DIR/.env"
-TELEGRAM_BOT_TOKEN=$token
-ADMIN_IDS=$admin_ids
-YOOKASSA_SHOP_ID=$yk_shop
-YOOKASSA_SECRET_KEY=$yk_secret
-RETURN_URL=$return_url
-WDTT_BASE_URL=$wdtt_url
-WDTT_USERNAME=$wdtt_user
-WDTT_PASSWORD=$wdtt_pass
-WDTT_VERIFY_SSL=false
-WEBHOOK_ENABLED=$webhook_enabled
-WEBHOOK_HOST=0.0.0.0
-WEBHOOK_PORT=$webhook_port
-WEBHOOK_PATH=/yookassa
-EOF
-    chmod 600 "$PROJECT_DIR/.env"
-    echo ".env сохранён: $PROJECT_DIR/.env"
-    return 0
-}
-
-# ---------- зависимости ----------
-
-SUDO=""
-if [ "$(id -u)" -ne 0 ]; then
-    if command -v sudo >/dev/null 2>&1; then
-        SUDO="sudo"
-    else
-        echo "Запустите скрипт от root (sudo ./deploy.sh) — нужен root для установки." >&2
-        exit 1
-    fi
-fi
-
-install_deps() {
-    local missing="" pkg pkg_manager
-    command -v curl     >/dev/null 2>&1 || missing="$missing curl"
-    command -v git      >/dev/null 2>&1 || missing="$missing git"
-    command -v whiptail >/dev/null 2>&1 || missing="$missing whiptail"
-    [ -z "$missing" ] && return 0
-
-    if command -v apt-get >/dev/null 2>&1; then
-        pkg="apt-get"; pkg_manager="apt"
-    elif command -v dnf >/dev/null 2>&1; then
-        pkg="dnf"; pkg_manager="dnf"
-    elif command -v yum >/dev/null 2>&1; then
-        pkg="yum"; pkg_manager="yum"
-    elif command -v zypper >/dev/null 2>&1; then
-        pkg="zypper"; pkg_manager="zypper"
-    elif command -v apk >/dev/null 2>&1; then
-        pkg="apk"; pkg_manager="apk"
-    else
-        echo "Неизвестный пакетный менеджер — пропускаю установку:$missing"
-        return 0
-    fi
-
-    echo "Устанавливаю зависимости:$missing ($pkg_manager)..."
-    case $pkg_manager in
-        apt)
-            $SUDO apt-get update -y >/dev/null 2>&1 || true
-            $SUDO apt-get install -y -qq $missing || echo "Не удалось установить:$missing (продолжаю)"
-            ;;
-        dnf)
-            $SUDO dnf install -y -q $(echo $missing | sed 's/whiptail/newt/') || \
-                $SUDO dnf install -y -q git curl || echo "Не удалось установить зависимости (продолжаю)"
-            ;;
-        yum)
-            $SUDO yum install -y -q $(echo $missing | sed 's/whiptail/newt/') || \
-                $SUDO yum install -y -q git curl || echo "Не удалось установить зависимости (продолжаю)"
-            ;;
-        zypper)
-            $SUDO zypper --non-interactive install $(echo $missing | sed 's/whiptail/dialog/') || echo "Не удалось установить:$missing (продолжаю)"
-            ;;
-        apk)
-            $SUDO apk add --no-progress $(echo $missing | sed 's/whiptail/newt/') || echo "Не удалось установить:$missing (продолжаю)"
-            ;;
-    esac
-}
-
-# ---------- ежедневная перезагрузка сервера (systemd-таймер) ----------
-
-REBOOT_SERVICE=/etc/systemd/system/daily-reboot.service
-REBOOT_TIMER=/etc/systemd/system/daily-reboot.timer
-REBOOT_TIME_DEFAULT=$(cat /etc/systemd/system/daily-reboot.timer 2>/dev/null | grep -oP '(?<=^OnCalendar=\*-\*-\* ).*' | head -n1)
-
-reboot_timer_remove() {
-    $SUDO systemctl disable --now daily-reboot.timer >/dev/null 2>&1 || true
-    $SUDO rm -f "$REBOOT_SERVICE" "$REBOOT_TIMER"
-    $SUDO systemctl daemon-reload || true
-    echo "Таймер ежедневной перезагрузки отключён."
-}
-
-reboot_timer_install() {
-    local t="$1" hh mm
-    hh=${t%:*}; mm=${t#*:}
-    printf '%02d' "$hh" >/dev/null 2>&1 && t="$(printf '%02d:%02d' "$hh" "$mm")"
-    cat <<HEREDOC | $SUDO tee "$REBOOT_SERVICE" >/dev/null
-[Unit]
-Description=Ежедневная перезагрузка сервера (настраивается WDTT-ботом)
-[Service]
-Type=oneshot
-ExecStart=/sbin/shutdown -r now
-HEREDOC
-    cat <<HEREDOC | $SUDO tee "$REBOOT_TIMER" >/dev/null
-[Unit]
-Description=Ежедневный перезапуск сервера (настраивается WDTT-ботом)
-[Timer]
-OnCalendar=*-*-* $t:00
-Persistent=true
-Unit=daily-reboot.service
-[Install]
-WantedBy=timers.target
-HEREDOC
-    $SUDO systemctl daemon-reload
-    $SUDO systemctl enable --now daily-reboot.timer
-    echo "Сервер будет перезагружаться каждый день в $t (systemd-таймер daily-reboot.timer)."
-    echo "Проверка: systemctl list-timers | grep daily-reboot"
-}
-
-setup_daily_reboot() {
-    # Неинтерактивный режим не трогает таймер. [$REBOOT_TIME_DEFAULT] — текущее время, если таймер уже стоит.
-    [ "${NONINTERACTIVE:-0}" = "1" ] && return 0
-    local cur="${REBOOT_TIME_DEFAULT}" t
-    if [ -f "$REBOOT_TIMER" ]; then
-        echo "Сейчас стоит ежедневная перезагрузка в ${cur:-??}."
-    fi
-    if ! wt_confirm "Настроить ежедневную перезагрузку сервера? (перезапускается ВЕСЬ сервер, включая WDTT-панель)"; then
-        if [ -f "$REBOOT_TIMER" ] && wt_confirm "Существующий таймер перезагрузки отключить?"; then
-            reboot_timer_remove
-        fi
-        return 0
-    fi
-    while :; do
-        t=$(wt_input "Время перезагрузки (HH:MM, время сервера):" "$cur" 1 0)
-        case $t in [0-9][0-9]:[0-5][0-9]|[01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) break ;; esac
-        if [ "$WT_GUI" = "1" ]; then
-            whiptail --title "Настройки WDTT-бота" --msgbox "  Неверный формат. Введите HH:MM, например 04:30." 8 60
-        else
-            echo "Неверный формат — нужен HH:MM (например, 04:30)." >&2
+# Check prerequisites
+check_prerequisites() {
+    log_info "Checking prerequisites..."
+    
+    for cmd in docker docker-compose git openssl; do
+        if ! command -v "$cmd" &> /dev/null; then
+            log_error "$cmd is not installed"
+            exit 1
         fi
     done
-    reboot_timer_install "$t"
+    
+    log_success "Prerequisites check passed"
 }
 
-# ---------- автозапуск бота при перезагрузке ----------
-
-setup_autostart() {
-    # Docker включим в загрузку + системd-сервис, который при старте сервера
-    # поднимает контейнер (restart: unless-stopped не сработает, если контейнер
-    # был остановлен вручную до ребута).
-    if ! command -v systemctl >/dev/null 2>&1; then
-        echo "systemd не найден — автозапуск пропускаю."
-        return 0
+# Generate secrets
+generate_secrets() {
+    log_info "Generating secrets..."
+    
+    mkdir -p secrets
+    
+    # Database password
+    if [ ! -f secrets/db_password.txt ]; then
+        openssl rand -base64 32 > secrets/db_password.txt
+        log_success "Generated DB password"
     fi
-    $SUDO systemctl enable docker >/dev/null 2>&1 || true
-    cat <<UNIT | $SUDO tee /etc/systemd/system/wdtt-bot.service >/dev/null
-[Unit]
-Description=WDTT Telegram bot (docker compose)
-After=network-online.target docker.service
-Wants=network-online.target
-Requires=docker.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-WorkingDirectory=$PROJECT_DIR
-ExecStart=$COMPOSE up -d
-ExecStop=$COMPOSE stop
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-    $SUDO systemctl daemon-reload
-    $SUDO systemctl enable wdtt-bot.service >/dev/null
-    echo "Автозапуск настроен: Docker включён в загрузку, wdtt-bot.service поднимает контейнер при старте сервера."
-    echo "Проверка: systemctl status wdtt-bot.service"
+    
+    # Grafana password
+    if [ ! -f secrets/grafana_password.txt ]; then
+        openssl rand -base64 16 > secrets/grafana_password.txt
+        log_success "Generated Grafana password"
+    fi
+    
+    # OpenFlux secret
+    if [ ! -f configs/openflux/secret.key ]; then
+        openssl rand -hex 32 > configs/openflux/secret.key
+        log_success "Generated OpenFlux secret"
+    fi
 }
 
-# ---------- основной сценарий ----------
+# Build images
+build_images() {
+    log_info "Building Docker images..."
+    
+    # Build Xray with plugin
+    log_info "Building Xray with WDTT plugin..."
+    docker-compose build xray
+    
+    # Build bot
+    log_info "Building Telegram bot..."
+    docker-compose build bot
+    
+    # Build WDTT panel
+    log_info "Building WDTT panel..."
+    docker-compose build wdtt-panel
+    
+    log_success "All images built"
+}
 
-if [ "$CONFIGURE_ONLY" = "1" ]; then
-    cd "$PROJECT_DIR" 2>/dev/null || { echo "Проект не установлен: $PROJECT_DIR не найден." >&2; exit 1; }
-    [ -f .env ] && chmod 600 .env
-    if run_settings_wizard; then
-        if detect_compose && docker ps --format '{{.Names}}' | grep -q wdtt-bot; then
-            echo "Перезапускаю контейнер с новыми настройками..."
-            $COMPOSE up -d
-        else
-            echo "Контейнер не запущен — примените настройки: sudo ./deploy.sh"
-        fi
+# Initialize database
+init_database() {
+    log_info "Initializing database..."
+    
+    # Start only DB and Redis first
+    docker-compose up -d db redis
+    
+    # Wait for DB to be ready
+    log_info "Waiting for database..."
+    sleep 10
+    
+    # Run migrations (if any)
+    docker-compose run --rm bot python -m alembic upgrade head || true
+    
+    log_success "Database initialized"
+}
+
+# Generate SSL certificates
+generate_ssl() {
+    log_info "Setting up SSL certificates..."
+    
+    mkdir -p certs
+    
+    if [ ! -f certs/your-domain.com.crt ] || [ ! -f certs/your-domain.com.key ]; then
+        log_warn "SSL certificates not found. You need to:"
+        echo "  1. Obtain SSL certificates for your domain (Let's Encrypt recommended)"
+        echo "  2. Place them in ./certs/your-domain.com.crt and ./certs/your-domain.com.key"
+        echo "  3. Or run: certbot certonly --standalone -d your-domain.com"
+        echo ""
+        read -p "Press Enter to continue after placing certificates..."
     fi
-    setup_daily_reboot
-    exit 0
-fi
+}
 
-echo "--- 1. Установка зависимостей (Docker, git, curl, whiptail) ---"
-install_deps
-if ! command -v docker >/dev/null 2>&1; then
-    echo "Docker не найден, устанавливаю..."
-    curl -fsSL https://get.docker.com | sh
-    systemctl enable --now docker
-fi
-if docker compose version >/dev/null 2>&1; then
-    COMPOSE="docker compose"
-else
-    COMPOSE="docker-compose"
-fi
-
-echo "--- 2. Клонирование репозитория ($BRANCH) ---"
-if [ -d "$PROJECT_DIR/.git" ]; then
-    cd "$PROJECT_DIR"
-    git fetch origin
-    git reset --hard "origin/$BRANCH"
-else
-    git clone --branch "$BRANCH" "$REPO_URL" "$PROJECT_DIR"
-    cd "$PROJECT_DIR"
-fi
-
-echo "--- 3. Окно настроек ---"
-if [ -f .env ] && [ "${NONINTERACTIVE:-0}" = "0" ] && [ -t 0 ]; then
-    # .env уже есть — всё равно открываем настройки (значения подставлены).
-    if wt_confirm "Найден существующий .env. Открыть окно настроек?"; then
-        run_settings_wizard
-    else
-        echo ".env не изменён: $PROJECT_DIR/.env"
+# Create config files from templates
+generate_configs() {
+    log_info "Generating configuration files..."
+    
+    # Check if .env exists
+    if [ ! -f configs/bot/.env ]; then
+        cp configs/bot/.env.example configs/bot/.env
+        log_warn "Created configs/bot/.env from template. PLEASE EDIT IT WITH YOUR VALUES!"
     fi
-elif [ -f .env ]; then
-    echo ".env уже существует ($PROJECT_DIR/.env) — неинтерактивный режим, пропускаю."
-else
-    if [ "${NONINTERACTIVE:-0}" = "1" ]; then
-        echo ".env не найден — NONINTERACTIVE требует готовый .env" >&2
-        exit 1
+    
+    # Xray config - check if UUID is set
+    if grep -q "YOUR_UUID_HERE" configs/xray/config.json; then
+        log_warn "configs/xray/config.json contains placeholder UUID. Please edit with your UUID."
     fi
-    run_settings_wizard
-fi
+    
+    # Plugin config
+    if grep -q "your-panel.example.com" configs/xray/plugin-config.json; then
+        log_warn "configs/xray/plugin-config.json contains placeholder values. Please edit."
+    fi
+    
+    # Nginx config
+    if grep -q "your-domain.com" configs/nginx/nginx.conf; then
+        log_warn "configs/nginx/nginx.conf contains placeholder domain. Please edit."
+    fi
+}
 
-echo "--- 3.5 Ежедневная перезагрузка сервера ---"
-setup_daily_reboot
+# Deploy
+deploy() {
+    log_info "Starting deployment..."
+    
+    # Pull latest images
+    docker-compose pull
+    
+    # Start all services
+    docker-compose up -d
+    
+    log_success "Deployment started"
+    log_info "Checking service health..."
+    sleep 15
+    
+    # Check service status
+    docker-compose ps
+    
+    log_info "Checking logs..."
+    docker-compose logs --tail=50
+}
 
-echo "--- 4. Сборка и запуск контейнера ---"
-$COMPOSE up -d --build
-setup_autostart
+# Main
+main() {
+    echo "==============================================================================="
+    echo "WDTT VPN DEPLOYMENT"
+    echo "==============================================================================="
+    echo ""
+    
+    check_prerequisites
+    generate_secrets
+    generate_configs
+    build_images
+    init_database
+    generate_ssl
+    deploy
+    
+    echo ""
+    echo "==============================================================================="
+    log_success "DEPLOYMENT COMPLETE"
+    echo "==============================================================================="
+    echo ""
+    echo "Services:"
+    echo "  - Xray + WDTT Plugin:     https://your-domain.com:443"
+    echo "  - Telegram Bot API:       http://your-domain.com:8080"
+    echo "  - WDTT Panel:             https://your-domain.com/wdtt/"
+    echo "  - Grafana:                http://your-domain.com:3000"
+    echo "  - Prometheus:             http://your-domain.com:9090"
+    echo ""
+    echo "Next steps:"
+    echo "  1. Edit configs/bot/.env with your actual values"
+    echo "  2. Edit configs/xray/config.json with your UUID"
+    echo "  3. Edit configs/xray/plugin-config.json with your panel URL"
+    echo "  4. Edit configs/nginx/nginx.conf with your domain"
+    echo "  5. Place SSL certificates in ./certs/"
+    echo "  6. Restart: docker-compose restart"
+    echo ""
+    echo "Useful commands:"
+    echo "  docker-compose logs -f bot          # Bot logs"
+    echo "  docker-compose logs -f xray         # Xray logs"
+    echo "  docker-compose ps                   # Service status"
+    echo "  docker-compose restart              # Restart all"
+}
 
-echo "-----------------------------------------------------------"
-echo "РАЗВЁРТЫВАНИЕ ЗАВЕРШЕНО!"
-echo "Статус:        $COMPOSE ps"
-echo "Логи:          $COMPOSE logs -f wdtt-bot"
-echo "Перезапуск:    $COMPOSE restart"
-echo "Обновление:    git pull && $COMPOSE up -d --build"
-echo "Настройки:     sudo ./deploy.sh --configure"
-echo "-----------------------------------------------------------"
-if grep -q '^WEBHOOK_ENABLED=true' "$PROJECT_DIR/.env" 2>/dev/null; then
-    echo "Внимание: WEBHOOK_ENABLED=true, но порт в docker-compose.yml"
-    echo "закомментирован — раскомментируйте блок ports и выполните"
-    echo "$COMPOSE up -d"
-fi
+# Run main
+main "$@"

@@ -1,0 +1,22 @@
+# ============================================================
+# DOCKERFILE FOR WDTT PANEL
+# ============================================================
+FROM golang:1.23-alpine AS builder
+
+WORKDIR /build
+COPY bot/ /build/
+RUN go build -ldflags="-s -w" -o wdtt-panel ./cmd/panel
+
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates tzdata sqlite-libs
+
+COPY --from=builder /build/wdtt-panel /usr/local/bin/wdtt-panel
+
+RUN mkdir -p /etc/wdtt /var/lib/wdtt /var/log/wdtt
+
+ENV WDTT_CONFIG=/etc/wdtt/config.yaml
+
+EXPOSE 2860 2096 2861 56000 56001 56003
+
+ENTRYPOINT ["wdtt-panel"]

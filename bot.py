@@ -204,44 +204,50 @@ NAV_BUTTONS = {
 }
 
 INSTRUCTION_INTRO = (
-    "📖 <b>Подключение к WDTT</b>\n\n"
+    "🔐 <b>Подключение через VLESS (Reality)</b>\n\n"
+    "VLESS — современный протокол с поддержкой Reality (маскировка под TLS).\n"
+    "Работает быстрее и стабильнее WDTT, не требует VK-хешей.\n\n"
     "Выберите вашу платформу:\n\n"
 )
 
 INSTRUCTION_ANDROID = (
-    "🤖 <b>Android</b> — установите приложение "
-    "<a href='https://github.com/amurcanov/proxy-turn-vk-android/releases/download/v1.2.4/WDTT-universal.apk'>WDTT</a>, "
-    "добавьте конфигурацию по ссылке и подключитесь."
+    "🤖 <b>Android</b> — рекомендуем <b>v2rayNG</b> или <b>NekoBox</b>:\n"
+    "оба поддерживают VLESS (Reality), работают без Root.\n\n"
+    "1. Скачайте v2rayNG или NekoBox по кнопке ниже.\n"
+    "2. Скопируйте VLESS-ссылку из профиля (кнопка 👤 Моя подписка).\n"
+    "3. В приложении: «+» → «Импорт из буфера обмена» → Подключиться.\n\n"
+    "<b>Поддерживаемые приложения:</b>\n"
+    "• v2rayNG — классика, стабильно\n"
+    "• NekoBox — Material You, TUN\n"
+    "• Clash Meta — правила, TUN\n"
+    "• SagerNet — от проекта v2ray\n"
+    "• Shadowrocket — есть на Android тоже"
 )
 
 INSTRUCTION_IOS = (
-    "🍎 <b>iOS</b> — загрузите приложение "
-    "<a href='https://apps.apple.com/app/testflight/id899247664'>TestFlight</a> "
-    "из App Store на устройство, затем откройте "
-    "<a href='https://testflight.apple.com/join/ANm6cmDv'>эту ссылку</a>, "
-    "установите клиент и подключитесь, как показано на скриншотах ниже."
+    "🍎 <b>iOS / iPadOS</b> — лучший выбор <b>Shadowrocket</b> ($2.99) или бесплатные:\n"
+    "<b>Streisand</b>, <b>FoXray</b>, <b>Stash</b> ($3.99), <b>Quantumult X</b>.\n\n"
+    "1. Установите приложение из App Store.\n"
+    "2. Скопируйте VLESS-ссылку из профиля (кнопка 👤 Моя подписка).\n"
+    "3. В приложении: «+» → «Импорт из буфера обмена» → Включите VPN."
 )
 
-INSTRUCTION_PHOTOS = (
-    ("assets/IMG_6820.jpeg", 'Откройте приложение VK Turn Proxy и нажмите внизу "Settings"'),
-    ("assets/IMG_6821.jpg", 'В разделе "Backup & Restore" выберите "Import from Connection Link…"'),
-    ("assets/IMG_6822.jpg", 'В открывшемся окне нажмите "Разрешить вставку" — ссылка вставится из Telegram'),
-)
+# Убрали старые фото WDTT/VK Turn Proxy — не актуальны для VLESS
+INSTRUCTION_PHOTOS = ()
 
-ANDROID_PHOTOS = (
-    ("assets/IMG_6833.jpeg", 'Откройте приложение и перейдите во вкладку "Туннель"'),
-    ("assets/IMG_6834.jpeg", 'Включите переключатель "Режим ссылки"'),
-    ("assets/IMG_6835.jpeg", 'Вставьте вашу ссылку wdtt:// и нажмите "Подключить"'),
-)
+ANDROID_PHOTOS = ()
 
 HELP_TEXT = (
     "ℹ️ <b>Как пользоваться ботом</b>\n\n"
     "1. Нажмите «🛒 Купить» и выберите тариф.\n"
     "2. Оплатите через ЮKassa по ссылке.\n"
-    "3. После оплаты бот пришлёт ссылку <code>wdtt://</code> для подключения.\n\n"
+    "3. После оплаты бот пришлёт <b>VLESS-ссылку</b> для подключения.\n\n"
     "🎁 В меню доступен бесплатный пробный период (один раз).\n"
     f"👥 Пригласите друга (кнопка 👥 Рефералы) — получите +{config.REFERRAL_REWARD_DAYS} дня "
     "после его первой оплаты.\n\n"
+    "🔐 VLESS (Reality) работает быстрее WDTT, не требует VK-хешей.\n"
+    "Поддерживаемые приложения: v2rayNG, NekoBox, Shadowrocket, Streisand, "
+    "Clash Meta, v2rayN, Clash Verge и др.\n\n"
     "Управление — кнопками меню под полем ввода."
 )
 
@@ -784,13 +790,80 @@ def plans_reply_keyboard(plans) -> ReplyKeyboardMarkup:
 
 # ---------- профиль и статус ----------
 
-async def _links_section(client, pwd: str, sub_id: str | None = None) -> str | None:
+def _build_vless_url(remark: str | None = None) -> str | None:
+    """Генерирует VLESS ссылку для подключения.
+    
+    Формат: vless://uuid@server:port?params#remark
+    """
+    if not config.VLESS_ENABLED:
+        return None
+    if not config.VLESS_SERVER or not config.VLESS_UUID:
+        log.warning("VLESS enabled but VLESS_SERVER or VLESS_UUID not configured")
+        return None
+    
+    server = config.VLESS_SERVER
+    port = config.VLESS_PORT
+    uuid = config.VLESS_UUID
+    protocol = config.VLESS_PROTOCOL
+    tls = config.VLESS_TLS
+    path = config.VLESS_PATH
+    host = config.VLESS_HOST
+    fp = config.VLESS_FINGERPRINT
+    alpn = config.VLESS_ALPN
+    name = remark or config.VLESS_REMARK
+
+    # Build query parameters for xhttp
+    params = [
+        f"encryption=none",
+        f"type={protocol}",
+        f"security={'tls' if tls else 'none'}",
+        f"fp={fp}",
+        f"alpn={alpn}",
+    ]
+    if path:
+        params.append(f"path={urllib.parse.quote(path)}")
+    if host:
+        params.append(f"host={host}")
+    if protocol == "tcp":
+        params.append(f"headerType=none")
+
+    query = "&".join(params)
+    # URL encode the remark
+    import urllib.parse
+    remark_encoded = urllib.parse.quote(name)
+
+    return f"vless://{uuid}@{server}:{port}?{query}#{remark_encoded}"
+
+def get_vless_only_links() -> dict:
+    """Возвращает только VLESS ссылки для новых пользователей (не в базе).
+
+    Используется при первом подключении по VLESS ссылке.
+    """
+    if not config.VLESS_ENABLED:
+        return {}
+    vless_url = _build_vless_url()
+    if not vless_url:
+        return {}
+    return {"vless": vless_url}
+
+
+async def _links_section(client, pwd: str, sub_id: str | None = None, include_vless: bool = True) -> str | None:
     """Блок со ссылками подключения для iOS и Android.
 
     Если настроен SUB_DOMAIN и есть sub_id — отдаём единую ссылку на подписку.
     Иначе платформенные ссылки берём со страницы подписки панели; если их нет —
     откатываемся на универсальную wdtt:// ссылку.
+    
+    Если include_vless=True, добавляет VLESS ссылку (для существующих пользователей).
     """
+    parts = []
+    
+    # VLESS ссылка (добавляем первой, если включена)
+    if include_vless and config.VLESS_ENABLED:
+        vless_url = _build_vless_url()
+        if vless_url:
+            parts.append(f"<b>🔐 VLESS (Reality)</b>\n<code>{html.escape(vless_url)}</code>")
+    
     # Если есть единый домен подписки и sub_id — отдаём унифицированную ссылку,
     # но только если Redis доступен (иначе nginx не найдёт маппинг)
     if config.SUB_DOMAIN and sub_id and redis_client:
@@ -799,7 +872,7 @@ async def _links_section(client, pwd: str, sub_id: str | None = None) -> str | N
             if mapped:
                 sub_path = config.SUB_PATH.rstrip("/")
                 unified_url = f"{config.SUB_DOMAIN.rstrip('/')}{sub_path}/{sub_id}"
-                return f"<b>🔗 Единая ссылка подписки:</b>\n<code>{html.escape(unified_url)}</code>"
+                parts.append(f"<b>🔗 Единая ссылка подписки:</b>\n<code>{html.escape(unified_url)}</code>")
         except Exception as e:
             log.warning("Redis недоступен при проверке sub_id, fallback на прямые ссылки: %s", e)
 
@@ -809,20 +882,33 @@ async def _links_section(client, pwd: str, sub_id: str | None = None) -> str | N
         log.warning("платформенные ссылки недоступны, используем универсальную")
         pl = {}
     labels = (("ios", "🍏 iOS"), ("android", "🤖 Android"), ("windows", "🪟 Windows"))
-    parts = [f"<b>{label}</b>\n<code>{html.escape(pl[key])}</code>"
-             for key, label in labels if pl.get(key)]
+    for key, label in labels:
+        if pl.get(key):
+            parts.append(f"<b>{label}</b>\n<code>{html.escape(pl[key])}</code>")
+    
     if parts:
         return "\n\n".join(parts)
+    
     try:
         univers = await client.find_link(pwd)
     except Exception:
         return None
-    return f"<code>{html.escape(univers)}</code>" if univers else None
+    if univers:
+        parts.append(f"<code>{html.escape(univers)}</code>")
+        return "\n\n".join(parts)
+    return None
 
 
-async def links_json(client, pwd: str, sub_id: str | None = None) -> dict:
-    """Ссылки подключения в JSON для Mini App: {unified?, ios?, android?, windows?, universal?}."""
+async def links_json(client, pwd: str, sub_id: str | None = None, include_vless: bool = True) -> dict:
+    """Ссылки подключения в JSON для Mini App: {unified?, ios?, android?, windows?, universal?, vless?}."""
     out: dict = {}
+    
+    # VLESS ссылка
+    if include_vless and config.VLESS_ENABLED:
+        vless_url = _build_vless_url()
+        if vless_url:
+            out["vless"] = vless_url
+    
     if config.SUB_DOMAIN and sub_id and redis_client:
         try:
             mapped = await redis_client.get(f"sub:{sub_id}")
@@ -877,7 +963,7 @@ async def profile_text(telegram_id: int) -> str:
             used_bytes = int(info.get("up_bytes") or 0) + int(info.get("down_bytes") or 0)
             devices_online = int(info.get("devices_online") or 0)
             panel_max_devices = int(info.get("max_devices") or 0)
-        section = await _links_section(client, customer["wdtt_password"], customer.get("sub_id"))
+        section = await _links_section(client, customer["wdtt_password"], customer.get("sub_id"), include_vless=True)
     except Exception:
         log.warning("не удалось получить ссылку для tg %s", telegram_id)
 
@@ -1160,14 +1246,19 @@ async def instr_callback(cb: CallbackQuery) -> None:
     platform = parts[1]  # android / ios / windows
     step = int(parts[2])
 
+    # Получаем инструкции из нового модуля instructions
+    from instructions import PLATFORMS as INSTR_PLATFORMS
+
     if platform == "android":
-        photos = ANDROID_PHOTOS
         intro = INSTRUCTION_ANDROID
+        plat = INSTR_PLATFORMS.get("android", {})
+        steps = plat.get("steps", [])
     elif platform == "ios":
-        photos = INSTRUCTION_PHOTOS
         intro = INSTRUCTION_IOS
+        plat = INSTR_PLATFORMS.get("ios", {})
+        steps = plat.get("steps", [])
     else:
-        # Windows: шаги текстовые (скриншотов нет) + ссылка на приложение
+        # Windows: используем инструкции из модуля
         await _instr_windows(cb, step)
         return
 
@@ -1181,28 +1272,35 @@ async def instr_callback(cb: CallbackQuery) -> None:
         await cb.answer()
         return
 
-    # шаги с фото (1-based)
-    if step > len(photos):
+    # шаги (текстовые, без фото — img=None)
+    if step > len(steps):
         await cb.answer()
         return
 
-    path, caption = photos[step - 1]
+    img, caption = steps[step - 1]
     buttons = []
     if step > 1:
         buttons.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"instr:{platform}:{step - 1}"))
-    if step < len(photos):
+    if step < len(steps):
         buttons.append(InlineKeyboardButton(text="Далее ▶", callback_data=f"instr:{platform}:{step + 1}"))
     else:
         buttons.append(InlineKeyboardButton(text="🏠 Главное меню", callback_data="instr:main"))
 
     kb = InlineKeyboardMarkup(inline_keyboard=[buttons])
-    await cb.message.delete()
-    await cb.message.answer_photo(FSInputFile(path), caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+    if img:
+        # Если есть фото — отправляем фото
+        await cb.message.delete()
+        await cb.message.answer_photo(FSInputFile(img), caption=caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+    else:
+        # Только текст
+        await cb.message.edit_text(caption, reply_markup=kb, parse_mode=ParseMode.HTML)
+
     await cb.answer()
 
 
 async def _instr_windows(cb: CallbackQuery, step: int) -> None:
-    """Инструкция для Windows: текстовые шаги + ссылка на приложение PWDTT."""
+    """Инструкция для Windows: текстовые шаги + ссылка на приложение v2rayN/NekoBox."""
     if not cb.message:
         await cb.answer()
         return
@@ -1210,10 +1308,10 @@ async def _instr_windows(cb: CallbackQuery, step: int) -> None:
     p = plats.get("windows") or {}
     steps = p.get("steps") or []
     app_url = p.get("app_url") or ""
-    app_label = p.get("app_label") or "Скачать PWDTT для Windows"
+    app_label = p.get("app_label") or "Скачать v2rayN для Windows"
 
     if step == 0:
-        lines = [p.get("intro") or "🪟 <b>Windows</b> — установите PWDTT и подключитесь."]
+        lines = [p.get("intro") or "🪟 <b>Windows</b> — установите v2rayN или NekoBox и подключитесь."]
         buttons = []
         if app_url:
             buttons.append(InlineKeyboardButton(text=f"⬇️ {app_label}", url=app_url))

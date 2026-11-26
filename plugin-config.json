@@ -1,0 +1,17 @@
+{
+  "panel_url": "https://your-panel.example.com:2860/wdtt",
+  "panel_username": "admin",
+  "panel_password": "your_panel_password",
+  "verify_ssl": false,
+  "vk_hash_mode": "auto",
+  "fixed_vk_hash": "",
+  "pool_size": 10,
+  "vk_hash_refresh_sec": 300,
+  "wireguard_enabled": false,
+  "wireguard_private_key": "",
+  "wireguard_public_key": "",
+  "wireguard_endpoint": "",
+  "dial_timeout_sec": 10,
+  "vk_hash_service_url": "http://localhost:8083",
+  "vk_hash_service_timeout": 30
+}

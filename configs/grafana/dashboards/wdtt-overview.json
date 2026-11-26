@@ -1,0 +1,98 @@
+{
+  "dashboard": {
+    "title": "WDTT VPN Overview",
+    "tags": ["wdtt", "vpn", "openflux"],
+    "timezone": "utc",
+    "panels": [
+      {
+        "title": "Active Users",
+        "type": "stat",
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "count(wdtt_users_active)",
+            "legendFormat": "Active Users"
+          }
+        ]
+      },
+      {
+        "title": "Total Traffic (24h)",
+        "type": "stat",
+        "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "sum(increase(xray_user_uplink_bytes_total[24h]) + increase(xray_user_downlink_bytes_total[24h]))",
+            "legendFormat": "Total Traffic (bytes)"
+          }
+        ]
+      },
+      {
+        "title": "Active Connections",
+        "type": "stat",
+        "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "xray_connections_active",
+            "legendFormat": "Active Connections"
+          }
+        ]
+      },
+      {
+        "title": "VK Relay Health",
+        "type": "stat",
+        "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "wdtt_vk_relay_active",
+            "legendFormat": "Active Relays"
+          }
+        ]
+      },
+      {
+        "title": "Traffic (24h)",
+        "type": "timeseries",
+        "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "rate(xray_user_uplink_bytes_total[5m])",
+            "legendFormat": "Uplink"
+          },
+          {
+            "expr": "rate(xray_user_downlink_bytes_total[5m])",
+            "legendFormat": "Downlink"
+          }
+        ]
+      },
+      {
+        "title": "Active Connections by Protocol",
+        "type": "piechart",
+        "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "sum by (protocol) (xray_connections_active)",
+            "legendFormat": "{{protocol}}"
+          }
+        ]
+      },
+      {
+        "title": "VK Relay Status",
+        "type": "table",
+        "gridPos": {"x": 0, "y": 12, "w": 24, "h": 8},
+        "targets": [
+          {
+            "expr": "wdtt_vk_relay_info",
+            "format": "table"
+          }
+        ],
+        "options": {
+          "showHeader": true
+        }
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "refresh": "30s"
+  }
+}

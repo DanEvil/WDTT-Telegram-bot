@@ -306,7 +306,7 @@ async def status_payload(uid: int) -> dict:
             }
             result["max_devices"] = int(info.get("max_devices") or plan.get("max_devices") or 1)
             result["devices_online"] = int(info.get("devices_online") or 0)
-            result["links"] = await b.links_json(client, customer["wdtt_password"], customer.get("sub_id"))
+            result["links"] = await b.links_json(client, customer["wdtt_password"], customer.get("sub_id"), include_vless=True)
         except Exception as e:
             log.warning("api v1 me: панель недоступна для tg %s: %s", uid, e)
             result["links"] = None
@@ -618,7 +618,7 @@ async def h_claim_trial(request: web.Request) -> web.Response:
         import bot as b  # lazy: избегаем циклического импорта
         client, pwd, expires = await b.grant_access(uid, None, TRIAL)
         await mark_trial_used(uid)
-        links = await b.links_json(client, pwd, (await __import__("db").get_customer(uid) or {}).get("sub_id"))
+        links = await b.links_json(client, pwd, (await __import__("db").get_customer(uid) or {}).get("sub_id"), include_vless=True)
         return web.json_response({"ok": True, "expires_at": expires, "plan": TRIAL, "links": links})
     except Exception as e:
         await release_trial(uid)
@@ -640,7 +640,7 @@ async def h_connections(request: web.Request) -> web.Response:
         try:
             import bot as b  # lazy: избегаем циклического импорта
             client = await b.get_client(customer.get("server_id"))
-            links = await b.links_json(client, customer["wdtt_password"], customer.get("sub_id"))
+            links = await b.links_json(client, customer["wdtt_password"], customer.get("sub_id"), include_vless=True)
             if links:
                 out["wdtt"] = links.get("windows") or links.get("universal") or links.get("android")
         except Exception as e:
@@ -781,6 +781,16 @@ async def h_plans(request: web.Request) -> web.Response:
 
 async def h_me(request: web.Request) -> web.Response:
     return web.json_response(await status_payload(user_id_from_request(request)))
+
+
+async def h_vless_links(request: web.Request) -> web.Response:
+    """GET /api/v1/vless-links — VLESS ссылки для новых пользователей (не в базе).
+    
+    Не требует авторизации — используется для первого подключения по VLESS ссылке.
+    """
+    import bot as b  # lazy: избегаем циклического импорта
+    links = b.get_vless_only_links()
+    return web.json_response({"vless": links.get("vless")})
 
 
 async def h_create_payment(request: web.Request) -> web.Response:
@@ -1214,6 +1224,7 @@ def register_v1_routes(app: web.Application, prefix: str = "/api/v1") -> None:
     app.router.add_get(f"{prefix}/ecosystem", h_ecosystem)
     app.router.add_get(f"{prefix}/plans", h_plans)
     app.router.add_get(f"{prefix}/me", h_me)
+    app.router.add_get(f"{prefix}/vless-links", h_vless_links)
     app.router.add_post(f"{prefix}/create-payment", h_create_payment)
     app.router.add_get(f"{prefix}/check-payment", h_check_payment)
     app.router.add_get(f"{prefix}/settings", h_settings_get)
