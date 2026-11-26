@@ -185,7 +185,7 @@ async def test_site_instruction_lists_devices():
     assert resp.status == 200
     for device in ("android", "ios", "windows"):
         assert f"/instruction/{device}" in resp.text
-    assert "PWDTT" in resp.text
+    assert "v2rayNG" in resp.text or "NekoBox" in resp.text
     assert "🪟" in resp.text
     assert "Открыть бота" not in resp.text
 
@@ -208,7 +208,7 @@ async def test_public_root_serves_site_landing_page():
 
 
 async def test_site_instruction_device_has_screenshots():
-    """Страница устройства: скриншоты, ссылка на приложение и кнопка «Назад»."""
+    """Страница устройства: шаги, ссылка на приложение и кнопка «Назад»."""
     class _ReqDevice(_Req):
         def __init__(self, device: str):
             super().__init__()
@@ -216,13 +216,13 @@ async def test_site_instruction_device_has_screenshots():
 
     resp = await web_app.handle_instruction_device(_ReqDevice("android"))
     assert resp.status == 200
-    assert "/static/instr/" in resp.text
+    assert "v2rayNG" in resp.text
     assert "/instruction" in resp.text  # кнопка «Назад к выбору устройства»
     assert "Открыть бота" not in resp.text
 
     resp_win = await web_app.handle_instruction_device(_ReqDevice("windows"))
     assert resp_win.status == 200
-    assert "PWDTT" in resp_win.text
+    assert "v2rayN" in resp_win.text
     assert "windows" in resp_win.text.lower()
 
 

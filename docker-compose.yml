@@ -69,6 +69,3 @@ volumes:
   bot-data:
   redis-data:
 
-secrets:
-  db_password:
-    file: ./secrets/db_password.txt
