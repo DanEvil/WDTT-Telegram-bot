@@ -793,40 +793,61 @@ def plans_reply_keyboard(plans) -> ReplyKeyboardMarkup:
 
 def _build_vless_url(remark: str | None = None) -> str | None:
     """Генерирует VLESS ссылку для подключения.
-    
+
     Формат: vless://uuid@server:port?params#remark
+    Для Reality в params добавляются pbk (public key), sid (short id), sni и flow.
     """
     if not config.VLESS_ENABLED:
         return None
     if not config.VLESS_SERVER or not config.VLESS_UUID:
         log.warning("VLESS enabled but VLESS_SERVER or VLESS_UUID not configured")
         return None
-    
+
     server = config.VLESS_SERVER
     port = config.VLESS_PORT
     uuid = config.VLESS_UUID
     protocol = config.VLESS_PROTOCOL
-    tls = config.VLESS_TLS
+    security = (config.VLESS_SECURITY or ("tls" if config.VLESS_TLS else "none")).strip().lower()
     path = config.VLESS_PATH
     host = config.VLESS_HOST
     fp = config.VLESS_FINGERPRINT
     alpn = config.VLESS_ALPN
+    flow = config.VLESS_FLOW
+    sni = config.VLESS_SNI
+    pbk = config.VLESS_PUBLIC_KEY
+    sid = config.VLESS_SHORT_ID
     name = remark or config.VLESS_REMARK
 
-    # Build query parameters for xhttp
     params = [
-        f"encryption=none",
+        "encryption=none",
         f"type={protocol}",
-        f"security={'tls' if tls else 'none'}",
-        f"fp={fp}",
-        f"alpn={alpn}",
+        f"security={security}",
     ]
-    if path:
-        params.append(f"path={urllib.parse.quote(path)}")
-    if host:
-        params.append(f"host={host}")
+
+    if security == "reality":
+        # Reality: клиенту нужен public key, short id и SNI чужого сайта.
+        if pbk:
+            params.append(f"pbk={pbk}")
+        if sid:
+            params.append(f"sid={sid}")
+        if sni:
+            params.append(f"sni={sni}")
+        if fp:
+            params.append(f"fp={fp}")
+        if flow:
+            params.append(f"flow={flow}")
+    else:
+        if fp:
+            params.append(f"fp={fp}")
+        if alpn:
+            params.append(f"alpn={alpn}")
+        if path:
+            params.append(f"path={urllib.parse.quote(path)}")
+        if host:
+            params.append(f"host={host}")
+
     if protocol == "tcp":
-        params.append(f"headerType=none")
+        params.append("headerType=none")
 
     query = "&".join(params)
     # URL encode the remark

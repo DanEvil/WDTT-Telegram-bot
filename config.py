@@ -145,18 +145,25 @@ SUB_PATH = os.getenv("SUB_PATH", "/sub/").strip()  # путь для подпи�
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0").strip()
 REDIS_SUB_TTL = _as_int("REDIS_SUB_TTL", 86400 * 30)  # TTL записи в секундах (30 дней)
 
-# VLESS Configuration (xhttp)
+# VLESS Configuration (Reality по умолчанию)
 VLESS_ENABLED = _as_bool("VLESS_ENABLED", True)
 VLESS_SERVER = os.getenv("VLESS_SERVER", "").strip()  # VLESS server address (domain or IP)
 VLESS_PORT = _as_int("VLESS_PORT", 443)
 VLESS_UUID = os.getenv("VLESS_UUID", "").strip()  # UUID for VLESS users (can be same or per-user)
-VLESS_PROTOCOL = os.getenv("VLESS_PROTOCOL", "xhttp").strip()  # xhttp, tcp, ws, grpc
+VLESS_PROTOCOL = os.getenv("VLESS_PROTOCOL", "tcp").strip()  # tcp, xhttp, ws, grpc
 VLESS_TLS = _as_bool("VLESS_TLS", True)
-VLESS_PATH = os.getenv("VLESS_PATH", "/xhttp").strip()  # xhttp path
-VLESS_HOST = os.getenv("VLESS_HOST", "").strip()  # Host header for xhttp
+# Режим безопасности: reality (маскировка под чужой TLS), tls (свой сертификат) или none
+VLESS_SECURITY = os.getenv("VLESS_SECURITY", "reality").strip()
+VLESS_PATH = os.getenv("VLESS_PATH", "").strip()  # path для xhttp/ws
+VLESS_HOST = os.getenv("VLESS_HOST", "").strip()  # Host header для xhttp/ws
 VLESS_FINGERPRINT = os.getenv("VLESS_FINGERPRINT", "chrome").strip()
 VLESS_ALPN = os.getenv("VLESS_ALPN", "h2,http/1.1").strip()
-VLESS_REMARK = os.getenv("VLESS_REMARK", "K.O. Gateway VLESS xhttp").strip()
+VLESS_REMARK = os.getenv("VLESS_REMARK", "K.O. Gateway VLESS").strip()
+# Reality: public key (pbk), short id (sid), SNI и flow — обязательны для рабочей ссылки
+VLESS_PUBLIC_KEY = os.getenv("VLESS_PUBLIC_KEY", "").strip()
+VLESS_SHORT_ID = os.getenv("VLESS_SHORT_ID", "").strip()
+VLESS_SNI = os.getenv("VLESS_SNI", "").strip()
+VLESS_FLOW = os.getenv("VLESS_FLOW", "xtls-rprx-vision").strip()
 
 
 def _duplicate_port_errors(ports: dict[str, int]) -> list[str]:
