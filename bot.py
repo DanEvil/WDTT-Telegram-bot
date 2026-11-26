@@ -225,8 +225,9 @@ INSTRUCTION_ANDROID = (
 )
 
 INSTRUCTION_IOS = (
-    "🍎 <b>iOS / iPadOS</b> — лучший выбор <b>Shadowrocket</b> ($2.99) или бесплатные:\n"
-    "<b>Streisand</b>, <b>FoXray</b>, <b>Stash</b> ($3.99), <b>Quantumult X</b>.\n\n"
+    "🍎 <b>iOS / iPadOS</b> — рекомендуем <b>Shadowrocket</b> (249 ₽):\n"
+    "бесплатные альтернативы — <b>Karing</b>, <b>V2RC</b>, <b>sing-box MT</b>.\n"
+    "Все они есть в App Store России и стран СНГ (ссылки кнопками ниже).\n\n"
     "1. Установите приложение из App Store.\n"
     "2. Скопируйте VLESS-ссылку из профиля (кнопка 👤 Моя подписка).\n"
     "3. В приложении: «+» → «Импорт из буфера обмена» → Включите VPN."
@@ -1264,10 +1265,18 @@ async def instr_callback(cb: CallbackQuery) -> None:
 
     if step == 0:
         # первый экран — текст + кнопка «Начать»
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Начать ▶", callback_data=f"instr:{platform}:1")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="instr:main")],
-        ])
+        kb_rows: list[list[InlineKeyboardButton]] = []
+        # iOS: кнопки-ссылки на приложения из App Store (для РФ/СНГ)
+        for url, label in (plat.get("links") or []):
+            kb_rows.append([InlineKeyboardButton(text=f"📲 {label}", url=url)])
+        kb_rows.append([InlineKeyboardButton(text="Начать ▶", callback_data=f"instr:{platform}:1")])
+        if platform == "ios" and config.SITE_URL:
+            kb_rows.append([InlineKeyboardButton(
+                text="🌐 Инструкция на сайте",
+                url=config.SITE_URL.rstrip("/") + "/instruction/ios",
+            )])
+        kb_rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="instr:main")])
+        kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
         await cb.message.edit_text(intro, reply_markup=kb, parse_mode=ParseMode.HTML)
         await cb.answer()
         return

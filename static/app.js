@@ -267,7 +267,7 @@
 
     let linksHtml = '';
     if (me && me.links && Object.keys(me.links).length) {
-      const labels = { unified: '🔗 Единая ссылка подписки', ios: '🍏 iOS', android: '🤖 Android', windows: '🪟 Windows — PWDTT', universal: '🔗 Универсальная' };
+      const labels = { unified: '🔗 Единая ссылка подписки', ios: '🍏 iOS', android: '🤖 Android', windows: '🪟 Windows — PWDTT', universal: '🔗 Универсальная', vless: '🔐 VLESS (Reality)' };
       linksHtml = `<h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--hint);margin:16px 16px 0;font-weight:700">Ссылки подключения</h3>` +
         Object.entries(me.links).map(([k, v]) => linkBlock(labels[k] || k, v)).join('');
     }

@@ -2,10 +2,14 @@
 
 Поддерживаемые приложения для VLESS (Reality):
 - Android: v2rayNG, Shadowrocket, Clash Meta, NekoBox, SagerNet
-- iOS: Shadowrocket, Streisand, FoXray, Stash, Quantumult X
+- iOS: Shadowrocket, Karing, V2RC, sing-box MT, Quantumult X
 - Windows: v2rayN, NekoBox, Clash Verge, FlClash
 - macOS: Clash Verge, FoXray, Stash
 - Linux: v2rayA, NekoBox, Clash Verge
+
+iOS-ссылки отобраны по фактической доступности в App Store России и стран СНГ
+(проверено через iTunes lookup API для storefront'ов ru/kz/by/uz/am/ge/md/tj).
+Streisand, FoXray и Stash удалены из App Store (404) — не предлагаем их клиентам.
 
 Фото лежат в static/instr/ и отдаются как /static/instr/<имя> —
 один и тот же URL работает и на сайте, и в мини-аппе.
@@ -15,7 +19,11 @@ import os
 
 # URLs приложений (поддержка VLESS)
 V2RAYNG_URL = "https://github.com/2dust/v2rayNG/releases/latest/download/app-universal-release.apk"
-SHADOWROCKET_IOS = "https://apps.apple.com/app/shadowrocket/id932747118"
+SHADOWROCKET_IOS = "https://apps.apple.com/app/id932747118"
+KARING_IOS = "https://apps.apple.com/app/id6472431552"
+V2RC_IOS = "https://apps.apple.com/app/id6748362312"
+SINGBOX_MT_IOS = "https://apps.apple.com/app/id6785326793"
+QUANTUMULT_X_IOS = "https://apps.apple.com/app/id1443988620"
 CLASH_META_URL = "https://github.com/MetaCubeX/ClashMetaForAndroid/releases/latest/download/app-release.apk"
 NEKOBOX_ANDROID = "https://github.com/MatsuriDayo/NekoBoxForAndroid/releases/latest/download/app-universal-release.apk"
 V2RAYN_URL = "https://github.com/2dust/v2rayN/releases/latest/download/v2rayN.zip"
@@ -47,21 +55,24 @@ PLATFORMS = {
     "ios": {
         "title": "🍎 iOS / iPadOS",
         "intro": (
-            "Для iOS лучший выбор — <b>Shadowrocket</b> (платный, $2.99) или "
-            "<b>Streisand</b> / <b>FoXray</b> (бесплатные).\n\n"
+            "Для iOS рекомендуем <b>Shadowrocket</b> (249 ₽) — самый удобный клиент для "
+            "VLESS Reality.\nБесплатные альтернативы: <b>Karing</b>, <b>V2RC</b>, <b>sing-box MT</b>.\n\n"
+            "Все приложения ниже доступны в App Store России и стран СНГ.\n"
+            "Если приложение не находится: Настройки → [ваше имя] → Медиаматериалы и покупки → "
+            "Учётная запись → Страна/регион → Россия.\n\n"
             "1. Установите приложение из App Store.\n"
             "2. Скопируйте VLESS-ссылку из профиля.\n"
             "3. В приложении: «+» → «Импорт из буфера обмена» → «Готово» → Включите VPN."
         ),
         "links": [
-            (SHADOWROCKET_IOS, "Shadowrocket (рекомендуем, $2.99)"),
-            ("https://apps.apple.com/app/streisand/id6443238825", "Streisand (бесплатно)"),
-            ("https://apps.apple.com/app/foxray/id6448898396", "FoXray (бесплатно)"),
-            ("https://apps.apple.com/app/stash/id1599252499", "Stash (платный, $3.99)"),
-            ("https://apps.apple.com/app/quantumult-x/id1443988620", "Quantumult X (платный)"),
+            (SHADOWROCKET_IOS, "Shadowrocket (рекомендуем, 249 ₽)"),
+            (KARING_IOS, "Karing (бесплатно, V2Ray/sing-box)"),
+            (V2RC_IOS, "V2RC (бесплатно, Xray + VLESS)"),
+            (SINGBOX_MT_IOS, "sing-box MT (бесплатно)"),
+            (QUANTUMULT_X_IOS, "Quantumult X (899 ₽, для продвинутых)"),
         ],
         "steps": [
-            (None, "Установите Shadowrocket, Streisand или FoXray из App Store."),
+            (None, "Установите Shadowrocket или Karing из App Store — ссылки на все варианты выше (все доступны в РФ и СНГ)."),
             (None, "Скопируйте VLESS-ссылку из профиля (кнопка «👤 Моя подписка» в боте или на сайте)."),
             (None, "В приложении: нажмите «+» (плюс вверху справа) → «Импорт из буфера обмена» → конфигурация добавится автоматически."),
             (None, "Включите переключатель VPN → разрешите добавление конфигурации VPN → статус «Подключено»."),
