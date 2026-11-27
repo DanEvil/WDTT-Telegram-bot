@@ -1,0 +1,247 @@
+package core
+
+import (
+	"net"
+	"os"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+// relay_health: учёт «живучести» и RTT конкретных VK TURN-серверов.
+//
+// Каждый воркер = отдельная TURN-аллокация. На флакающих VK-relay аллокация
+// живёт 30-90с и умирает, заставляя воркер пересоздаваться (churn). Чтобы
+// уменьшить черн, мы считаем среднюю длительность жизни сессий по хосту relay
+// (EWMA) и при выборе TURN URL уводим воркеры с явно «дохлых» серверов на более
+// стабильные, не пере-выбирая только что умерший relay.
+//
+// avgRttMs — EWMA времени TURN Allocate + DTLS handshake; ниже RTT → выше score.
+
+const (
+	relayShortLifeSec    = 50.0
+	relayEWMAAlpha       = 0.4
+	relayRttEWMAAlpha    = 0.35
+	relayHotDeadWindow   = 25 * time.Second
+	relayRttBonusCap     = 150.0
+	relayRttPenaltyFloor = -100.0
+	// VK не складывает скорость девяти аллокаций на одном адресе и режет квотой.
+	maxLivePerRelayHost = 8
+)
+
+type relayHealth struct {
+	avgLifeSec  float64 // EWMA полезной жизни сессии, сек
+	avgRttMs    float64 // EWMA TURN+DTLS setup, мс
+	shortStreak int
+	samples     int
+	lastDeath   time.Time
+}
+
+var (
+	relayHealthMu       sync.Mutex
+	relayHealthMap      = map[string]*relayHealth{}
+	relayLive           = map[string]int{}
+	relayKnownURLs      = map[string]bool{}
+	relayReadyURLs      = map[string]int{}
+	relayPreferences    []string
+	relayPreferencesSet bool
+)
+
+func noteRelayReady(url string, delta int) {
+	relayHealthMu.Lock()
+	defer relayHealthMu.Unlock()
+	relayReadyURLs[url] += delta
+	if relayReadyURLs[url] <= 0 {
+		delete(relayReadyURLs, url)
+	}
+}
+
+// ActiveTURNWorkers counts only sessions that reached READY, not dial attempts.
+func ActiveTURNWorkers() map[string]int {
+	relayHealthMu.Lock()
+	defer relayHealthMu.Unlock()
+	result := make(map[string]int, len(relayReadyURLs))
+	for url, count := range relayReadyURLs {
+		result[url] = count
+	}
+	return result
+}
+
+func SetRelayPreferences(hosts []string) {
+	relayHealthMu.Lock()
+	defer relayHealthMu.Unlock()
+	relayPreferences = append([]string(nil), hosts...)
+	relayPreferencesSet = true
+}
+
+func RememberTURNURLs(urls []string) {
+	relayHealthMu.Lock()
+	defer relayHealthMu.Unlock()
+	for _, url := range urls {
+		relayKnownURLs[url] = true
+	}
+}
+
+func KnownTURNURLs() []string {
+	relayHealthMu.Lock()
+	defer relayHealthMu.Unlock()
+	urls := make([]string, 0, len(relayKnownURLs))
+	for url := range relayKnownURLs {
+		urls = append(urls, url)
+	}
+	sort.Strings(urls)
+	return urls
+}
+
+func relayHostKey(turnURL string) string {
+	if host, _, err := net.SplitHostPort(turnURL); err == nil {
+		return host
+	}
+	return turnURL
+}
+
+func recordRelaySession(turnURL string, life time.Duration, becameReady bool) {
+	key := relayHostKey(turnURL)
+	sec := 0.0
+	if becameReady {
+		sec = life.Seconds()
+	}
+
+	relayHealthMu.Lock()
+	defer relayHealthMu.Unlock()
+
+	h := relayHealthMap[key]
+	if h == nil {
+		h = &relayHealth{avgLifeSec: sec}
+		relayHealthMap[key] = h
+	} else {
+		h.avgLifeSec = relayEWMAAlpha*sec + (1-relayEWMAAlpha)*h.avgLifeSec
+	}
+	h.samples++
+	if sec < relayShortLifeSec {
+		h.shortStreak++
+		h.lastDeath = time.Now()
+	} else {
+		h.shortStreak = 0
+	}
+}
+
+// recordRelayPathRTT обновляет EWMA RTT пути (TURN Allocate + DTLS HS) для relay.
+func recordRelayPathRTT(turnURL string, rttMs float64) {
+	if rttMs <= 0 {
+		return
+	}
+	key := relayHostKey(turnURL)
+	relayHealthMu.Lock()
+	defer relayHealthMu.Unlock()
+
+	h := relayHealthMap[key]
+	if h == nil {
+		h = &relayHealth{avgRttMs: rttMs}
+		relayHealthMap[key] = h
+		return
+	}
+	if h.avgRttMs <= 0 {
+		h.avgRttMs = rttMs
+	} else {
+		h.avgRttMs = relayRttEWMAAlpha*rttMs + (1-relayRttEWMAAlpha)*h.avgRttMs
+	}
+}
+
+func relayScore(turnURL string, now time.Time) float64 {
+	key := relayHostKey(turnURL)
+	h := relayHealthMap[key]
+	if h == nil {
+		return relayShortLifeSec
+	}
+	score := h.avgLifeSec
+	if !h.lastDeath.IsZero() && now.Sub(h.lastDeath) < relayHotDeadWindow {
+		score -= 1000
+	}
+	score -= float64(h.shortStreak) * 5
+	if h.avgRttMs > 0 {
+		bonus := 200.0 - h.avgRttMs
+		if bonus > relayRttBonusCap {
+			bonus = relayRttBonusCap
+		}
+		if bonus < relayRttPenaltyFloor {
+			bonus = relayRttPenaltyFloor
+		}
+		score += bonus
+	}
+	return score
+}
+
+// Optional experiment: prefer only relays present in VK's issued credentials.
+// Recently failed relays still fall back to the normal health selection.
+func relayPreferenceBonus(turnURL string, now time.Time) float64 {
+	key := relayHostKey(turnURL)
+	if h := relayHealthMap[key]; h != nil && !h.lastDeath.IsZero() && now.Sub(h.lastDeath) < relayHotDeadWindow {
+		return 0
+	}
+	preferences := relayPreferences
+	if !relayPreferencesSet {
+		preferences = strings.Split(os.Getenv("WDTT_PREFERRED_RELAYS"), ",")
+	}
+	for i, host := range preferences {
+		match := strings.TrimSpace(host) == key
+		if _, subnet, err := net.ParseCIDR(strings.TrimSpace(host)); err == nil {
+			match = subnet.Contains(net.ParseIP(key))
+		}
+		if match {
+			return 10000 / float64(i+1)
+		}
+	}
+	return 0
+}
+
+func noteRelayLive(turnURL string, delta int) {
+	key := relayHostKey(turnURL)
+	relayHealthMu.Lock()
+	relayLive[key] += delta
+	if relayLive[key] <= 0 {
+		delete(relayLive, key)
+	}
+	relayHealthMu.Unlock()
+}
+
+func pickHealthyTurnURL(urls []string, sessionID int) string {
+	if len(urls) == 0 {
+		return ""
+	}
+	if len(urls) == 1 {
+		return urls[0]
+	}
+
+	relayHealthMu.Lock()
+	defer relayHealthMu.Unlock()
+
+	now := time.Now()
+	n := len(urls)
+	choose := func(allowOverCap bool) (int, bool) {
+		bestIdx, bestScore := -1, -1e18
+		for i := 0; i < n; i++ {
+			idx := (sessionID + i) % n
+			if !allowOverCap && relayLive[relayHostKey(urls[idx])] >= maxLivePerRelayHost {
+				continue
+			}
+			score := relayScore(urls[idx], now) + relayPreferenceBonus(urls[idx], now)
+			if i == 0 {
+				score += 0.5
+			}
+			if score > bestScore {
+				bestScore, bestIdx = score, idx
+			}
+		}
+		return bestIdx, bestIdx >= 0
+	}
+	if idx, ok := choose(false); ok {
+		return urls[idx]
+	}
+	idx, _ := choose(true)
+	if idx < 0 {
+		return urls[sessionID%n]
+	}
+	return urls[idx]
+}
