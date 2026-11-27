@@ -1,0 +1,14 @@
+[Unit]
+Description=WDTT headless exit client (VK TURN) with local SOCKS5
+After=network-online.target wdtt.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c 'exec /usr/local/wdtt-socks/wdtt-socks run -link "$(cat /root/wdtt-exit-link.txt)" -cfg-root /var/lib/wdtt-socks'
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
