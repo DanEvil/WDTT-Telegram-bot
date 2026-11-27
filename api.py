@@ -850,7 +850,11 @@ async def h_vless_links(request: web.Request) -> web.Response:
     if b.vless_server.enabled():
         uuid_value = await b._ensure_vless_user(uid)
         url = b._build_vless_url(vless_uuid=uuid_value) if uuid_value else None
-        return web.json_response({"vless": url})
+        out = {"vless": url}
+        xhttp_url = b._build_vless_xhttp_url(vless_uuid=uuid_value) if uuid_value else None
+        if xhttp_url:
+            out["vless_xhttp"] = xhttp_url
+        return web.json_response(out)
     links = b.get_vless_only_links()
     return web.json_response({"vless": links.get("vless")})
 

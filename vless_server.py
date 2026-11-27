@@ -77,22 +77,24 @@ async def _ssh_retry(command: str, timeout: int = 30, attempts: int = 3) -> tupl
     return last
 
 
-def _client(uuid: str, email: str) -> dict:
+def _client(uuid: str, email: str, with_flow: bool = True) -> dict:
     client = {"id": uuid, "email": email}
-    if config.VLESS_FLOW:
+    # flow (xtls-rprx-vision) работает только в REALITY-инбаунде; XHTTP его не
+    # поддерживает — для vless-xhttp-in клиент заводится без flow.
+    if with_flow and config.VLESS_FLOW:
         client["flow"] = config.VLESS_FLOW
     return client
 
 
-def _inbound_json(clients: list[dict]) -> str:
+def _inbound_json(clients: list[dict], tag: str | None = None, port: int | None = None) -> str:
     """JSON для `xray api adu` со списком пользователей."""
     return json.dumps(
         {
             "inbounds": [
                 {
-                    "tag": config.VLESS_INBOUND_TAG,
+                    "tag": tag or config.VLESS_INBOUND_TAG,
                     "listen": "0.0.0.0",
-                    "port": config.VLESS_INBOUND_PORT,
+                    "port": port if port is not None else config.VLESS_INBOUND_PORT,
                     "protocol": "vless",
                     "settings": {
                         "clients": clients,
@@ -103,6 +105,33 @@ def _inbound_json(clients: list[dict]) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _all_inbounds_json(clients: list[dict]) -> str:
+    """JSON для adu со всеми инбаундами (REALITY + XHTTP, если XHTTP включён)."""
+    inbounds = [
+        {
+            "tag": config.VLESS_INBOUND_TAG,
+            "listen": "0.0.0.0",
+            "port": config.VLESS_INBOUND_PORT,
+            "protocol": "vless",
+            "settings": {"clients": clients, "decryption": "none"},
+        }
+    ]
+    if config.VLESS_XHTTP_ENABLED:
+        inbounds.append(
+            {
+                "tag": config.VLESS_XHTTP_INBOUND_TAG,
+                "listen": "0.0.0.0",
+                "port": config.VLESS_XHTTP_INBOUND_PORT,
+                "protocol": "vless",
+                "settings": {
+                    "clients": [{k: v for k, v in c.items() if k != "flow"} for c in clients],
+                    "decryption": "none",
+                },
+            }
+        )
+    return json.dumps({"inbounds": inbounds}, ensure_ascii=False)
 
 
 # ---------- файл со списком клиентов (переживает рестарт xray) ----------
@@ -178,7 +207,7 @@ async def add_user(uuid: str, email: str) -> bool:
     """Добавляет пользователя на VLESS-сервер. True, если он там есть."""
     if not enabled():
         return False
-    payload = base64.b64encode(_inbound_json([_client(uuid, email)]).encode("utf-8")).decode("ascii")
+    payload = base64.b64encode(_all_inbounds_json([_client(uuid, email)]).encode("utf-8")).decode("ascii")
     cmd = (
         f"echo {payload} | base64 -d > /tmp/vless-user.json && "
         f"{config.VLESS_XRAY_BIN} api adu --server={config.VLESS_API_SERVER} "
@@ -213,7 +242,13 @@ async def remove_user(email: str) -> bool:
         return False
     cmd = (
         f"{config.VLESS_XRAY_BIN} api rmu --server={config.VLESS_API_SERVER} "
-        f"-tag={config.VLESS_INBOUND_TAG} '{email}' 2>&1"
+        f"-tag={config.VLESS_INBOUND_TAG} '{email}' 2>&1; "
+        + (
+            f"{config.VLESS_XRAY_BIN} api rmu --server={config.VLESS_API_SERVER} "
+            f"-tag={config.VLESS_XHTTP_INBOUND_TAG} '{email}' 2>&1"
+            if config.VLESS_XHTTP_ENABLED
+            else "true"
+        )
     )
     try:
         rc, out, err = await _ssh_retry(cmd)

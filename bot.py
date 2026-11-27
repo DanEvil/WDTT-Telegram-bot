@@ -11,6 +11,7 @@ import logging
 import re
 import secrets
 import time
+import urllib.parse
 import uuid
 from collections import defaultdict, deque
 from datetime import datetime
@@ -969,6 +970,48 @@ def _build_vless_url(remark: str | None = None, vless_uuid: str | None = None) -
 
     return f"vless://{uuid_value}@{server}:{port}?{query}#{remark_encoded}"
 
+
+def _build_vless_xhttp_url(remark: str | None = None, vless_uuid: str | None = None) -> str | None:
+    """Генерирует VLESS+XHTTP ссылку для режима «белых списков» РФ.
+
+    Формат: vless://uuid@<фронтенд-домен>:443?encryption=none&type=xhttp&security=tls
+            &sni=<домен>&path=/xhttp&host=<домен>&mode=packet-up&uplinkDataPlacement=header…#remark
+    SNI и Host — фронтенд-домен (traefik/nginx), за которым спрятан xray-инбаунд.
+    """
+    if not config.VLESS_ENABLED or not config.VLESS_XHTTP_ENABLED:
+        return None
+    host = config.VLESS_XHTTP_HOST or config.VLESS_SERVER
+    if not host or not (vless_uuid or config.VLESS_UUID):
+        log.warning("VLESS_XHTTP enabled but VLESS_XHTTP_HOST or UUID not configured")
+        return None
+
+    uuid_value = (vless_uuid or config.VLESS_UUID).strip()
+    port = config.VLESS_XHTTP_PORT
+    path = config.VLESS_XHTTP_PATH or "/xhttp"
+    name = remark or config.VLESS_XHTTP_REMARK
+
+    params = [
+        "encryption=none",
+        "type=xhttp",
+        "security=tls",
+        f"sni={host}",
+        f"path={urllib.parse.quote(path)}",
+        f"host={host}",
+        f"mode={config.VLESS_XHTTP_MODE}",
+        f"uplinkDataPlacement={config.VLESS_XHTTP_UPLINK_PLACEMENT}",
+        f"uplinkChunkSize={config.VLESS_XHTTP_CHUNK}",
+        f"scMaxEachPostBytes={config.VLESS_XHTTP_SC_MAX}",
+        f"scMinPostsIntervalMs={config.VLESS_XHTTP_SC_MIN_MS}",
+    ]
+    if config.VLESS_FINGERPRINT:
+        params.append(f"fp={config.VLESS_FINGERPRINT}")
+    if config.VLESS_ALPN:
+        params.append(f"alpn={urllib.parse.quote(config.VLESS_ALPN)}")
+
+    query = "&".join(params)
+    remark_encoded = urllib.parse.quote(name)
+    return f"vless://{uuid_value}@{host}:{port}?{query}#{remark_encoded}"
+
 def get_vless_only_links() -> dict:
     """Возвращает только VLESS ссылки для новых пользователей (не в базе).
 
@@ -1065,9 +1108,15 @@ async def links_json(client, pwd: str, sub_id: str | None = None, include_vless:
 
     # VLESS ссылка
     if include_vless and config.VLESS_ENABLED:
-        vless_url = _build_vless_url(vless_uuid=await _customer_vless_uuid(pwd))
+        vless_uuid = await _customer_vless_uuid(pwd)
+        vless_url = _build_vless_url(vless_uuid=vless_uuid)
         if vless_url:
             out["vless"] = vless_url
+        # VLESS+XHTTP ссылка (белые списки РФ): тот же персональный UUID,
+        # но транспорт — XHTTP через фронтенд-домен.
+        xhttp_url = _build_vless_xhttp_url(vless_uuid=vless_uuid)
+        if xhttp_url:
+            out["vless_xhttp"] = xhttp_url
     
     if config.SUB_DOMAIN and sub_id and redis_client:
         try:

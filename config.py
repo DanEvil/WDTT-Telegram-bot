@@ -191,6 +191,24 @@ VLESS_INBOUND_PORT = _as_int("VLESS_INBOUND_PORT", 443)
 # перезаливается в xray сервисом xray-vless-sync.service.
 VLESS_CLIENTS_FILE = os.getenv("VLESS_CLIENTS_FILE", "/etc/xray-vless/users.json").strip()
 
+# --- VLESS XHTTP (режим «белых списков» РФ) ---
+# Второй инбаунд xray (vless-xhttp-in) прячется за фронтенд-доменом
+# (traefik/nginx на 2.56.120.156 → 78.17.16.23:20500), поэтому трафик выглядит
+# как обычный HTTPS к whitelisted-домену. Клиентам отдаётся отдельная ссылка
+# vless://…?type=xhttp&security=tls&sni=<фронтенд-домен>&path=/xhttp…
+VLESS_XHTTP_ENABLED = _as_bool("VLESS_XHTTP_ENABLED", False)
+VLESS_XHTTP_HOST = os.getenv("VLESS_XHTTP_HOST", "").strip()  # фронтенд-домен, напр. app.ko-gateway.ru (SNI и Host)
+VLESS_XHTTP_PORT = _as_int("VLESS_XHTTP_PORT", 443)          # порт фронтенда
+VLESS_XHTTP_PATH = os.getenv("VLESS_XHTTP_PATH", "/xhttp").strip()
+VLESS_XHTTP_MODE = os.getenv("VLESS_XHTTP_MODE", "packet-up").strip()
+VLESS_XHTTP_UPLINK_PLACEMENT = os.getenv("VLESS_XHTTP_UPLINK_PLACEMENT", "header").strip()
+VLESS_XHTTP_CHUNK = _as_int("VLESS_XHTTP_CHUNK", 16384)          # uplinkChunkSize
+VLESS_XHTTP_SC_MAX = _as_int("VLESS_XHTTP_SC_MAX", 32768)        # scMaxEachPostBytes
+VLESS_XHTTP_SC_MIN_MS = _as_int("VLESS_XHTTP_SC_MIN_MS", 10)     # scMinPostsIntervalMs
+VLESS_XHTTP_INBOUND_TAG = os.getenv("VLESS_XHTTP_INBOUND_TAG", "vless-xhttp-in").strip()
+VLESS_XHTTP_INBOUND_PORT = _as_int("VLESS_XHTTP_INBOUND_PORT", 20500)
+VLESS_XHTTP_REMARK = os.getenv("VLESS_XHTTP_REMARK", "K.O. Gateway VLESS XHTTP").strip()
+
 
 def _duplicate_port_errors(ports: dict[str, int]) -> list[str]:
     """Ошибки о совпадающих портах (все HTTP-серверы живут в одном процессе)."""

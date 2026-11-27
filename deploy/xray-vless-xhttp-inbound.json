@@ -1,0 +1,30 @@
+{
+  "_comment": "VLESS XHTTP-инбаунд для /etc/xray-vless/config.json на VPN-ноде (78.17.16.23). Прячется за фронтенд-доменом: traefik/nginx (2.56.120.156, app.ko-gateway.ru) проксирует /xhttp -> 78.17.16.23:20500. uplinkDataPlacement=header — uplink идёт в HTTP-заголовках X-Data-N (нужны увеличенные буферы у фронтенда, см. deploy/nginx-xhttp.conf). flow у клиентов этого инбаунда быть не должно (XHTTP его не поддерживает) — см. deploy/xray-vless-sync.sh.",
+  "tag": "vless-xhttp-in",
+  "listen": "0.0.0.0",
+  "port": 20500,
+  "protocol": "vless",
+  "settings": {
+    "clients": [],
+    "decryption": "none"
+  },
+  "streamSettings": {
+    "network": "xhttp",
+    "security": "none",
+    "xhttpSettings": {
+      "host": "app.ko-gateway.ru",
+      "path": "/xhttp",
+      "mode": "packet-up",
+      "uplinkDataPlacement": "header",
+      "uplinkChunkSize": 16384,
+      "scMaxEachPostBytes": 32768,
+      "scMinPostsIntervalMs": 10,
+      "serverMaxHeaderBytes": 65536
+    }
+  },
+  "sniffing": {
+    "enabled": true,
+    "destOverride": ["http", "tls", "quic"],
+    "routeOnly": false
+  }
+}
