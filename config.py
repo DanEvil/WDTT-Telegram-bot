@@ -166,7 +166,11 @@ VLESS_REMARK = os.getenv("VLESS_REMARK", "K.O. Gateway VLESS").strip()
 # Reality: public key (pbk), short id (sid), SNI и flow — обязательны для рабочей ссылки
 VLESS_PUBLIC_KEY = os.getenv("VLESS_PUBLIC_KEY", "").strip()
 VLESS_SHORT_ID = os.getenv("VLESS_SHORT_ID", "").strip()
-VLESS_SNI = os.getenv("VLESS_SNI", "").strip()
+# SNI для VLESS+REALITY. В режиме «белых списков» РФ пропускают только
+# whitelisted-домены (ya.ru, yandex.ru, rutube.ru, gosuslugi.ru, sun6-21.userapi.com …),
+# поэтому дефолт — ya.ru (см. docs/white-sni-ru.txt). Должен совпадать с
+# realitySettings.serverNames в /etc/xray-vless/config.json на сервере.
+VLESS_SNI = os.getenv("VLESS_SNI", "ya.ru").strip()
 VLESS_FLOW = os.getenv("VLESS_FLOW", "xtls-rprx-vision").strip()
 
 # Управление пользователями VLESS-сервера (per-user UUID через xray API по SSH).
