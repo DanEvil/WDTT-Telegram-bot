@@ -22,6 +22,7 @@
 Если VLESS_PER_USER выключен или не заданы SSH-доступы, модуль ничего не
 делает и возвращает False — бот продолжает работать с общей ссылкой.
 """
+import asyncio
 import base64
 import json
 import logging
@@ -61,11 +62,30 @@ async def _ssh(command: str, timeout: int = 30) -> tuple[int, str, str]:
     )
 
 
-def _inbound_json(uuid: str, email: str) -> str:
-    """JSON для `xray api adu` с одним пользователем."""
+async def _ssh_retry(command: str, timeout: int = 30, attempts: int = 3) -> tuple[int, str, str]:
+    """Выполняет команду с повторами: xray API иногда не отвечает с первого раза."""
+    last = (1, "", "not executed")
+    for i in range(attempts):
+        try:
+            last = await _ssh(command, timeout=timeout)
+        except Exception as e:
+            last = (1, "", str(e))
+        if last[0] == 0 and "failed to dial" not in (last[1] + last[2]):
+            return last
+        if i < attempts - 1:
+            await asyncio.sleep(1.5 * (i + 1))
+    return last
+
+
+def _client(uuid: str, email: str) -> dict:
     client = {"id": uuid, "email": email}
     if config.VLESS_FLOW:
         client["flow"] = config.VLESS_FLOW
+    return client
+
+
+def _inbound_json(clients: list[dict]) -> str:
+    """JSON для `xray api adu` со списком пользователей."""
     return json.dumps(
         {
             "inbounds": [
@@ -75,7 +95,7 @@ def _inbound_json(uuid: str, email: str) -> str:
                     "port": config.VLESS_INBOUND_PORT,
                     "protocol": "vless",
                     "settings": {
-                        "clients": [client],
+                        "clients": clients,
                         "decryption": "none",
                     },
                 }
@@ -83,6 +103,51 @@ def _inbound_json(uuid: str, email: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+# ---------- файл со списком клиентов (переживает рестарт xray) ----------
+
+async def read_clients() -> list[dict]:
+    """Читает сохранённый список клиентов с VLESS-сервера."""
+    if not enabled():
+        return []
+    path = config.VLESS_CLIENTS_FILE
+    try:
+        rc, out, err = await _ssh(f"cat {path} 2>/dev/null || echo '[]'")
+    except Exception as e:
+        log.warning("не удалось прочитать список VLESS-клиентов: %s", e)
+        return []
+    if rc != 0:
+        return []
+    try:
+        data = json.loads(out.strip() or "[]")
+    except ValueError:
+        log.warning("файл клиентов VLESS повреждён: %s", out[:200])
+        return []
+    if isinstance(data, dict):
+        data = data.get("clients", [])
+    return [c for c in data if isinstance(c, dict) and c.get("id")]
+
+
+async def write_clients(clients: list[dict]) -> bool:
+    """Сохраняет список клиентов на VLESS-сервер (источник правды для sync-юнита)."""
+    if not enabled():
+        return False
+    payload = base64.b64encode(json.dumps(clients, ensure_ascii=False).encode("utf-8")).decode("ascii")
+    path = config.VLESS_CLIENTS_FILE
+    cmd = (
+        f"echo {payload} | base64 -d > {path}.tmp && "
+        f"mv {path}.tmp {path} && chmod 600 {path} && echo OK"
+    )
+    try:
+        rc, out, err = await _ssh(cmd)
+    except Exception as e:
+        log.warning("не удалось сохранить список VLESS-клиентов: %s", e)
+        return False
+    if rc != 0 or "OK" not in out:
+        log.warning("сохранение списка VLESS-клиентов: %s", (err or out)[:200])
+        return False
+    return True
 
 
 async def list_emails() -> list[str]:
@@ -113,26 +178,33 @@ async def add_user(uuid: str, email: str) -> bool:
     """Добавляет пользователя на VLESS-сервер. True, если он там есть."""
     if not enabled():
         return False
-    payload = base64.b64encode(_inbound_json(uuid, email).encode("utf-8")).decode("ascii")
+    payload = base64.b64encode(_inbound_json([_client(uuid, email)]).encode("utf-8")).decode("ascii")
     cmd = (
         f"echo {payload} | base64 -d > /tmp/vless-user.json && "
         f"{config.VLESS_XRAY_BIN} api adu --server={config.VLESS_API_SERVER} "
         f"/tmp/vless-user.json 2>&1; rm -f /tmp/vless-user.json"
     )
     try:
-        rc, out, err = await _ssh(cmd)
+        rc, out, err = await _ssh_retry(cmd)
     except Exception as e:
         log.warning("не удалось добавить VLESS-пользователя %s: %s", email, e)
         return False
     if "Added 1 user(s)" in out:
         log.info("VLESS-пользователь %s добавлен", email)
-        return True
-    # Уже существует — считаем успехом (идемпотентность).
-    if "already exists" in out.lower() or "Added 0 user(s)" in out:
+    elif "already exists" in out.lower() or "Added 0 user(s)" in out:
+        # Уже существует — считаем успехом (идемпотентность).
         log.info("VLESS-пользователь %s уже был на сервере", email)
-        return True
-    log.warning("xray api adu (%s): %s", email, (out or err)[:300])
-    return False
+    else:
+        log.warning("xray api adu (%s): %s", email, (out or err)[:300])
+        return False
+
+    # Сохраняем список клиентов на диске: пользователи, добавленные через API,
+    # живут только в памяти xray и исчезают при рестарте.
+    clients = await read_clients()
+    if not any(c.get("email") == email for c in clients):
+        clients.append(_client(uuid, email))
+        await write_clients(clients)
+    return True
 
 
 async def remove_user(email: str) -> bool:
@@ -144,14 +216,18 @@ async def remove_user(email: str) -> bool:
         f"-tag={config.VLESS_INBOUND_TAG} '{email}' 2>&1"
     )
     try:
-        rc, out, err = await _ssh(cmd)
+        rc, out, err = await _ssh_retry(cmd)
     except Exception as e:
         log.warning("не удалось удалить VLESS-пользователя %s: %s", email, e)
         return False
-    if "Removed 1 user(s)" in out:
-        log.info("VLESS-пользователь %s удалён", email)
-        return True
-    if "not found" in out.lower():
-        return True
-    log.warning("xray api rmu (%s): %s", email, (out or err)[:300])
-    return False
+    if "Removed 1 user(s)" not in out and "not found" not in out.lower():
+        log.warning("xray api rmu (%s): %s", email, (out or err)[:300])
+        return False
+
+    clients = await read_clients()
+    rest = [c for c in clients if c.get("email") != email]
+    if len(rest) != len(clients):
+        await write_clients(rest)
+
+    log.info("VLESS-пользователь %s удалён", email)
+    return True

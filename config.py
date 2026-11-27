@@ -178,6 +178,10 @@ VLESS_XRAY_BIN = os.getenv("VLESS_XRAY_BIN", "/usr/local/xray-vless/bin/xray").s
 VLESS_API_SERVER = os.getenv("VLESS_API_SERVER", "127.0.0.1:62790").strip()
 VLESS_INBOUND_TAG = os.getenv("VLESS_INBOUND_TAG", "vless-in").strip()
 VLESS_INBOUND_PORT = _as_int("VLESS_INBOUND_PORT", 443)
+# Файл со списком клиентов на VLESS-сервере: пользователи, добавленные через
+# xray API, живут только в памяти и теряются при рестарте — этот файл
+# перезаливается в xray сервисом xray-vless-sync.service.
+VLESS_CLIENTS_FILE = os.getenv("VLESS_CLIENTS_FILE", "/etc/xray-vless/users.json").strip()
 
 
 def _duplicate_port_errors(ports: dict[str, int]) -> list[str]:

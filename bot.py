@@ -587,10 +587,11 @@ async def migrate_sub_ids() -> None:
 
 
 async def backfill_vless_users() -> None:
-    """Выдаёт персональный VLESS-доступ всем активным клиентам без него.
+    """Синхронизирует персональные VLESS-доступы с VLESS-сервером.
 
-    Запускается при старте бота: после перехода на per-user старые клиенты
-    получают свой UUID, а общая ссылка перестаёт быть единственным входом.
+    Запускается при старте бота: клиентам без UUID выдаётся свой, а уже
+    выданные — заново заливаются на сервер (xray мог перезапуститься и
+    потерять runtime-список, либо сервер был переустановлен).
     """
     if not vless_server.enabled():
         return
@@ -599,15 +600,36 @@ async def backfill_vless_users() -> None:
     except Exception:
         log.exception("backfill_vless_users: не удалось прочитать клиентов")
         return
-    pending = [c for c in customers if not (c.get("vless_uuid") or "").strip()]
-    if not pending:
+    if not customers:
         return
-    log.info("backfill_vless_users: %d клиентов без персонального VLESS-доступа", len(pending))
+
+    pending = [c for c in customers if not (c.get("vless_uuid") or "").strip()]
+    if pending:
+        log.info("backfill_vless_users: %d клиентов без персонального VLESS-доступа", len(pending))
     for c in pending:
         try:
             await _ensure_vless_user(c["telegram_id"])
         except Exception:
             log.exception("backfill_vless_users: ошибка для tg %s", c.get("telegram_id"))
+
+    # Сверяем состав на сервере: после рестарта xray runtime-список пуст.
+    try:
+        emails = set(await vless_server.list_emails())
+    except Exception:
+        emails = set()
+    if emails:
+        restored = 0
+        for c in customers:
+            uid = (c.get("vless_uuid") or "").strip()
+            email = vless_server.email_for(c["telegram_id"])
+            if uid and email not in emails:
+                try:
+                    if await vless_server.add_user(uid, email):
+                        restored += 1
+                except Exception:
+                    log.exception("backfill_vless_users: не удалось восстановить tg %s", c.get("telegram_id"))
+        if restored:
+            log.info("backfill_vless_users: восстановлено %d доступов на сервере", restored)
     log.info("backfill_vless_users: завершено")
 
 

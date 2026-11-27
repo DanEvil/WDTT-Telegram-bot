@@ -59,7 +59,7 @@ def test_inbound_json_structure(monkeypatch):
     monkeypatch.setattr(config, "VLESS_INBOUND_TAG", "vless-in")
     monkeypatch.setattr(config, "VLESS_INBOUND_PORT", 443)
     monkeypatch.setattr(config, "VLESS_FLOW", "xtls-rprx-vision")
-    data = json.loads(vless_server._inbound_json("uuid-1", "tg42"))
+    data = json.loads(vless_server._inbound_json([vless_server._client("uuid-1", "tg42")]))
     inb = data["inbounds"][0]
     assert inb["tag"] == "vless-in"
     assert inb["listen"] == "0.0.0.0"
@@ -88,6 +88,8 @@ def test_add_user_builds_expected_command(monkeypatch):
 
     async def fake_ssh(cmd, timeout=30):
         calls.append(cmd)
+        if "cat " in cmd:
+            return 0, "[]", ""
         return 0, "Added 1 user(s) in total.", ""
 
     monkeypatch.setattr(config, "VLESS_PER_USER", True)
@@ -98,19 +100,39 @@ def test_add_user_builds_expected_command(monkeypatch):
     monkeypatch.setattr(config, "VLESS_INBOUND_TAG", "vless-in")
     monkeypatch.setattr(config, "VLESS_INBOUND_PORT", 443)
     monkeypatch.setattr(config, "VLESS_FLOW", "xtls-rprx-vision")
+    monkeypatch.setattr(config, "VLESS_CLIENTS_FILE", "/etc/xray-vless/users.json")
     monkeypatch.setattr(vless_server, "_ssh", fake_ssh)
 
     ok = asyncio.run(vless_server.add_user("uuid-1", "tg42"))
     assert ok is True
-    cmd = calls[0]
-    assert "api adu" in cmd
-    assert "--server=127.0.0.1:62790" in cmd
+    adu = [c for c in calls if "api adu" in c][0]
+    assert "--server=127.0.0.1:62790" in adu
     # JSON передаётся base64, чтобы не сломать shell-экранирование
-    assert "base64 -d" in cmd
+    assert "base64 -d" in adu
     import base64
-    payload = cmd.split("echo ", 1)[1].split(" |", 1)[0]
+    payload = adu.split("echo ", 1)[1].split(" |", 1)[0]
     data = json.loads(base64.b64decode(payload).decode())
     assert data["inbounds"][0]["settings"]["clients"][0]["id"] == "uuid-1"
+    # список клиентов должен быть сохранён на диск (переживает рестарт xray)
+    saved = [c for c in calls if "base64 -d > /etc/xray-vless/users.json.tmp" in c]
+    assert saved, "файл клиентов не сохранён"
+    spayload = saved[0].split("echo ", 1)[1].split(" |", 1)[0]
+    clients = json.loads(base64.b64decode(spayload).decode())
+    assert clients[0]["email"] == "tg42"
+
+
+def test_read_clients_parses_file(monkeypatch):
+    async def fake_ssh(cmd, timeout=30):
+        return 0, json.dumps([{"id": "u1", "email": "tg1"}]), ""
+
+    monkeypatch.setattr(config, "VLESS_PER_USER", True)
+    monkeypatch.setattr(config, "VLESS_SSH_HOST", "1.2.3.4")
+    monkeypatch.setattr(config, "VLESS_SSH_PASSWORD", "pass")
+    monkeypatch.setattr(config, "VLESS_CLIENTS_FILE", "/etc/xray-vless/users.json")
+    monkeypatch.setattr(vless_server, "_ssh", fake_ssh)
+
+    clients = asyncio.run(vless_server.read_clients())
+    assert clients == [{"id": "u1", "email": "tg1"}]
 
 
 def test_remove_user_handles_not_found(monkeypatch):
