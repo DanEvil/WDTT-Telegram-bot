@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WDTT (upstream, ildarmaga/wdtt) — схема работы</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--foreground); min-height: 100vh; padding: 1.5rem; }
+    .container { max-width: 1240px; margin: 0 auto; }
+    .header-row { display: flex; align-items: center; gap: .75rem; margin-bottom: .25rem; }
+    .pulse-dot { width: 12px; height: 12px; background: #22d3ee; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+    h1 { font-size: 1.4rem; font-weight: 700; }
+    .subtitle { color: var(--muted-foreground); font-size: .8rem; margin: .25rem 0 1.25rem 1.9rem; }
+    .diagram-container { background: var(--card); border-radius: 1rem; border: 1px solid var(--border); padding: 1rem; overflow-x: auto; }
+    svg { width: 100%; min-width: 1000px; display: block; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; margin-top: 1.25rem; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: .75rem; padding: 1rem; }
+    .card-header { display: flex; align-items: center; gap: .5rem; margin-bottom: .6rem; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .cyan { background:#22d3ee; } .emerald { background:#34d399; } .amber { background:#fbbf24; } .rose { background:#fb7185; } .violet { background:#a78bfa; }
+    .card h3 { font-size: .85rem; }
+    .card ul { list-style: none; color: var(--muted-foreground); font-size: .74rem; }
+    .card li { margin-bottom: .3rem; }
+    .footer { text-align:center; color: var(--muted-foreground); font-size:.72rem; margin-top:1.25rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header-row">
+      <div class="pulse-dot"></div>
+      <h1>WDTT upstream (ildarmaga/wdtt) — как устроен исходный сервер</h1>
+    </div>
+    <p class="subtitle">Один бинарник wdtt-app = DTLS :56000 (WRAP) + userspace WireGuard + панель :2860 + подписка :2096 · опционально wdtt-xray поверх интерфейса wdtt0</p>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1160 800">
+        <defs>
+          <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/>
+          </marker>
+          <marker id="arrowRose" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fb7185"/>
+          </marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="var(--border)" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#grid)"/>
+
+        <!-- ================= КЛИЕНТЫ ================= -->
+        <rect x="20" y="300" width="185" height="200" rx="8" fill="var(--card)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="112" y="325" fill="var(--foreground)" font-size="12" font-weight="700" text-anchor="middle">Клиенты</text>
+        <text x="112" y="345" fill="#22d3ee" font-size="9" text-anchor="middle">VK Turn Proxy (iOS)</text>
+        <text x="112" y="358" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">wdtt:// colon, 1 хеш</text>
+        <text x="112" y="376" fill="#22d3ee" font-size="9" text-anchor="middle">WDTT (Android/Win)</text>
+        <text x="112" y="389" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">wdtt:// colon, до 4 хешей</text>
+        <text x="112" y="407" fill="#22d3ee" font-size="9" text-anchor="middle">PWDTT (Win/Linux)</text>
+        <text x="112" y="420" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">релизы pwdtt-client-*</text>
+        <text x="112" y="438" fill="#22d3ee" font-size="9" text-anchor="middle">qWDTT (fork)</text>
+        <text x="112" y="451" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">qwdtt:// hashes=h1,h2…</text>
+        <text x="112" y="473" fill="#a78bfa" font-size="8" text-anchor="middle">ссылка = wdtt://base64(JSON)</text>
+        <text x="112" y="486" fill="#a78bfa" font-size="8" text-anchor="middle">или colon: password:vk_hash:ports</text>
+
+        <!-- ================= VPS ГРАНИЦА ================= -->
+        <rect x="245" y="24" width="480" height="690" rx="12" fill="rgba(251,191,36,0.05)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="257" y="44" fill="#fbbf24" font-size="10" font-weight="700">VPS — /usr/local/bin/wdtt-app -config-dir /etc/wdtt (systemd wdtt.service)</text>
+
+        <!-- server core -->
+        <rect x="265" y="250" width="220" height="240" rx="8" fill="var(--card)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="375" y="272" fill="var(--foreground)" font-size="12" font-weight="700" text-anchor="middle">wdtt-server (core)</text>
+        <text x="375" y="292" fill="#22d3ee" font-size="8" text-anchor="middle">DTLS :56000 — WRAP obfs</text>
+        <text x="375" y="306" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">auth: password / vk_hash</text>
+        <text x="375" y="324" fill="#22d3ee" font-size="8" text-anchor="middle">WG (userspace) UDP :56001</text>
+        <text x="375" y="338" fill="#22d3ee" font-size="8" text-anchor="middle">RAW direct :56003 (=DTLS+3)</text>
+        <text x="375" y="356" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">интерфейс wdtt0, 10.66.66.1</text>
+        <text x="375" y="370" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">юзерам 10.66.66.x, NAT MASQUERADE</text>
+        <text x="375" y="388" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">GETCONF multi-user + rate-limit</text>
+        <text x="375" y="406" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">логи: [WRAP] [DTLS] [WG] [ПОДКЛ]</text>
+        <text x="375" y="420" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">[RELAY] [СТАТ] [NAT] [TC]</text>
+        <text x="375" y="444" fill="#fbbf24" font-size="8" text-anchor="middle">фолбэк-порты: 56000,56001,9000</text>
+        <text x="375" y="466" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">admin API: GET /health (-admin-addr)</text>
+
+        <!-- панель -->
+        <rect x="265" y="60" width="220" height="160" rx="8" fill="var(--card)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="375" y="82" fill="var(--foreground)" font-size="12" font-weight="700" text-anchor="middle">wdtt-panel</text>
+        <text x="375" y="100" fill="#a78bfa" font-size="8" text-anchor="middle">web UI :2860 (admin/wdtt)</text>
+        <text x="375" y="114" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">3x-ui-стиль: users, inbound, трафик</text>
+        <text x="375" y="130" fill="#a78bfa" font-size="8" text-anchor="middle">подписка :2096 → wdtt:// ссылки</text>
+        <text x="375" y="144" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">REST API (docs/API.md), ACME</text>
+        <text x="375" y="160" fill="#34d399" font-size="8" text-anchor="middle">VK Creator: cookies → vk_hash</text>
+        <text x="375" y="174" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">таблица vk_calls (живые звонки)</text>
+        <text x="375" y="196" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">хранение: /etc/wdtt/panel.db (SQLite)</text>
+
+        <!-- xray опционально -->
+        <rect x="265" y="520" width="220" height="170" rx="8" fill="transparent" stroke="#34d399" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="273" y="536" fill="#34d399" font-size="8" font-weight="700">опционально: wdtt-xray.service (BindsTo=wdtt.service)</text>
+        <rect x="275" y="544" width="200" height="136" rx="6" fill="var(--card)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="375" y="564" fill="var(--foreground)" font-size="11" font-weight="700" text-anchor="middle">wdtt-xray</text>
+        <text x="375" y="582" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">конфиг /etc/wdtt-xray/config.json</text>
+        <text x="375" y="598" fill="#34d399" font-size="8" text-anchor="middle">in: redirect-in (dokodemo ← wdtt0)</text>
+        <text x="375" y="612" fill="#34d399" font-size="8" text-anchor="middle">in: dns-in · sniffing для access log</text>
+        <text x="375" y="628" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">out: freedom / WARP / NL-прокси</text>
+        <text x="375" y="644" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">stats + api, hot-reload adi/rmi</text>
+        <text x="375" y="660" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">панель управляет через /panel/xray/*</text>
+        <text x="375" y="676" fill="#fb7185" font-size="8" text-anchor="middle">redirect-in и dns-in защищены</text>
+
+        <!-- панель.db связь -->
+        <rect x="505" y="60" width="200" height="70" rx="8" fill="var(--card)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="605" y="84" fill="var(--foreground)" font-size="11" font-weight="700" text-anchor="middle">panel.db (SQLite)</text>
+        <text x="605" y="100" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">inbound, users, settings, vk_cookies,</text>
+        <text x="605" y="114" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">vk_calls, xray meta/config</text>
+
+        <!-- ================= VK CLOUD ================= -->
+        <rect x="770" y="250" width="200" height="180" rx="12" fill="rgba(167,139,250,0.06)" stroke="#a78bfa" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="782" y="270" fill="#a78bfa" font-size="10" font-weight="700">VK Cloud</text>
+        <rect x="790" y="284" width="160" height="120" rx="6" fill="var(--card)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="870" y="306" fill="var(--foreground)" font-size="11" font-weight="600" text-anchor="middle">TURN media relays</text>
+        <text x="870" y="324" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">vk_hash = join link видеозвонка</text>
+        <text x="870" y="338" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">→ звонок → creds relay (ICE)</text>
+        <text x="870" y="356" fill="#a78bfa" font-size="8" text-anchor="middle">трафик идёт как VK-звонок,</text>
+        <text x="870" y="370" fill="#a78bfa" font-size="8" text-anchor="middle">проходит белые списки РФ</text>
+        <text x="870" y="390" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">cookies (remixsid) — WhitelistBypass.Creator</text>
+
+        <!-- ================= ИНТЕРНЕТ ================= -->
+        <rect x="770" y="500" width="200" height="90" rx="8" fill="var(--card)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="870" y="528" fill="var(--foreground)" font-size="12" font-weight="700" text-anchor="middle">Интернет</text>
+        <text x="870" y="546" fill="var(--muted-foreground)" font-size="9" text-anchor="middle">exit IP = IP VPS</text>
+        <text x="870" y="562" fill="var(--muted-foreground)" font-size="9" text-anchor="middle">(NAT MASQUERADE на wdtt0)</text>
+
+        <!-- ================= СВЯЗИ ================= -->
+        <!-- клиенты → DTLS -->
+        <line x1="205" y1="380" x2="263" y2="370" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="150" y="350" fill="#22d3ee" font-size="8">wdtt:// → DTLS :56000</text>
+        <text x="150" y="362" fill="#22d3ee" font-size="8">(WRAP, vk_hash)</text>
+        <!-- DTLS → WG/NAT → интернет (через relay) -->
+        <path d="M 375 492 L 375 640 L 500 640 L 500 545" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="300" y="632" fill="#22d3ee" font-size="8">WG over DTLS → NAT (wdtt0)</text>
+        <!-- сервер → VK relay -->
+        <path d="M 487 330 C 600 330 640 340 788 340" fill="none" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="600" y="322" fill="#a78bfa" font-size="8">DTLS к TURN-relay VK</text>
+        <!-- relay → интернет -->
+        <line x1="870" y1="432" x2="870" y2="498" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <!-- panel.db → server/panel -->
+        <line x1="505" y1="95" x2="487" y2="95" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="4,4" marker-end="url(#arrow)"/>
+        <line x1="605" y1="132" x2="605" y2="200 L 487 200 L 487 280" fill="none" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="4,4" marker-end="url(#arrow)"/>
+        <text x="520" y="192" fill="#fbbf24" font-size="8">конфиг и юзеры</text>
+        <!-- панель → подписка → клиенты -->
+        <path d="M 265 140 L 230 140 L 230 300 L 207 330" fill="none" stroke="#a78bfa" stroke-width="1.2" stroke-dasharray="4,4" marker-end="url(#arrowRose)"/>
+        <text x="120" y="130" fill="#a78bfa" font-size="8">:2096 подписка</text>
+        <!-- xray tap wdtt0 -->
+        <line x1="487" y1="560" x2="500" y2="420" stroke="#34d399" stroke-width="1.2" stroke-dasharray="4,4" marker-end="url(#arrow)"/>
+        <text x="500" y="500" fill="#34d399" font-size="8">redirect трафика wdtt0</text>
+        <!-- xray out → интернет -->
+        <path d="M 487 640 C 650 660 700 560 768 550" fill="none" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+        <text x="640" y="600" fill="#34d399" font-size="8">outbound (direct/WARP/NL)</text>
+
+        <!-- legend -->
+        <text x="990" y="620" fill="var(--foreground)" font-size="10" font-weight="700">Легенда</text>
+        <line x1="990" y1="636" x2="1008" y2="636" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="1016" y="640" fill="var(--muted-foreground)" font-size="8">VPN-трафик</text>
+        <line x1="990" y1="654" x2="1008" y2="654" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="1016" y="658" fill="var(--muted-foreground)" font-size="8">VK relay</text>
+        <line x1="990" y1="672" x2="1008" y2="672" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,4" marker-end="url(#arrowRose)"/>
+        <text x="1016" y="676" fill="var(--muted-foreground)" font-size="8">управление</text>
+        <rect x="990" y="686" width="18" height="12" rx="3" fill="transparent" stroke="#34d399" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="1016" y="696" fill="var(--muted-foreground)" font-size="8">опциональный xray</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-header"><div class="card-dot cyan"></div><h3>Ядро: DTLS + userspace WG</h3></div>
+        <ul>
+          <li>• клиент → DTLS :56000, обфускация WRAP, auth по паролю/vk_hash</li>
+          <li>• vk_hash → VK-видеозвонок → TURN relay (медиарелеи VK), WG гоняется поверх DTLS</li>
+          <li>• userspace WG на wdtt0 (10.66.66.1, юзеры 10.66.66.x) + NAT MASQUERADE</li>
+          <li>• порты: DTLS 56000, WG 56001, RAW direct 56003 (=DTLS+3)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot violet"></div><h3>Панель и подписка</h3></div>
+        <ul>
+          <li>• web UI :2860 (логин admin/wdtt), REST API — docs/API.md</li>
+          <li>• подписка :2096 отдаёт wdtt:// ссылки клиентам</li>
+          <li>• VK Creator: cookies VK (remixsid) → vk_hash, таблица vk_calls</li>
+          <li>• всё хранится в /etc/wdtt/panel.db (SQLite)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot emerald"></div><h3>Опциональный Xray (wdtt-xray)</h3></div>
+        <ul>
+          <li>• отдельный юнит wdtt-xray.service (BindsTo=wdtt.service), конфиг /etc/wdtt-xray/config.json</li>
+          <li>• redirect-in (dokodemo) ловит трафик интерфейса wdtt0 → outbound (direct/WARP/NL)</li>
+          <li>• панель управляет инбаундами hot-reload'ем (xray api adi/rmi), теги redirect-in/dns-in защищены</li>
+          <li>• в исходнике VLESS — только как outbound/режим Xray, не встроенный протокол сервера</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="footer">Источник: github.com/ildarmaga/wdtt (README, docs/SERVER.md, docs/API.md, server/, panel/) · GPLv3, based on amurcanov/proxy-turn-vk-android</p>
+  </div>
+</body>
+</html>
