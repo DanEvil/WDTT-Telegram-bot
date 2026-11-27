@@ -157,6 +157,9 @@ async def init_db() -> None:
             await db.execute("ALTER TABLE customers ADD COLUMN vk_hash_initialized INTEGER NOT NULL DEFAULT 0")
         if "vk_hash_created_at" not in cols:
             await db.execute("ALTER TABLE customers ADD COLUMN vk_hash_created_at INTEGER NOT NULL DEFAULT 0")
+        # Миграция: персональный UUID для VLESS (свой доступ на сервер у каждого клиента)
+        if "vless_uuid" not in cols:
+            await db.execute("ALTER TABLE customers ADD COLUMN vless_uuid TEXT")
 
         # Миграции таблицы servers: SSH-доступ для автоустановки панели
         scols = [r["name"] for r in (await (await db.execute("PRAGMA table_info(servers)")).fetchall())]
@@ -583,6 +586,24 @@ async def clear_customer(telegram_id: int) -> None:
         await db.execute(
             "UPDATE customers SET wdtt_password = NULL, expires_at = 0, plan_id = NULL, "
             "reminder_sent = 0, traffic_notified = 0 WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+
+
+async def set_customer_vless_uuid(telegram_id: int, vless_uuid: str) -> None:
+    """Сохраняет персональный UUID клиента для VLESS."""
+    async with conn() as db:
+        await db.execute(
+            "UPDATE customers SET vless_uuid = ? WHERE telegram_id = ?",
+            ((vless_uuid or "").strip(), telegram_id),
+        )
+
+
+async def clear_customer_vless_uuid(telegram_id: int) -> None:
+    """Сбрасывает персональный UUID клиента (доступ отозван)."""
+    async with conn() as db:
+        await db.execute(
+            "UPDATE customers SET vless_uuid = NULL WHERE telegram_id = ?",
             (telegram_id,),
         )
 

@@ -37,8 +37,22 @@ from config import WDTT_BASE_URL, WDTT_USERNAME, WDTT_PASSWORD, WDTT_VERIFY_SSL
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+# Optional shared secret: if set, every request must carry the matching
+# X-VK-Hash-Token header. Without the token the service is open to anyone who
+# knows a wdtt_password.
+TOKEN = os.getenv("VK_HASH_SERVICE_TOKEN", "").strip()
+
+
 # Global WDTT client
 wdtt_client: Optional[WdttClient] = None
+
+
+def _token_ok(request: Request) -> bool:
+    """Check the shared secret (if configured)."""
+    if not TOKEN:
+        return True
+    got = request.headers.get("X-VK-Hash-Token", "")
+    return bool(got) and got == TOKEN
 
 
 @asynccontextmanager
@@ -109,7 +123,9 @@ async def ensure_vk_hash(wdtt_password: str) -> dict:
 
 
 async def handle_ensure(request: Request) -> Response:
-    """POST /vk-hash/ensure - Ensure VK hash for user by wdtt_password."""
+    """POST /vk-hash/ensure - Ensure VK hash exists for user by wdtt_password."""
+    if not _token_ok(request):
+        return json_response({"success": False, "error": "forbidden"}, status=403)
     try:
         data = await request.json()
         wdtt_password = data.get("wdtt_password", "").strip()
@@ -125,7 +141,9 @@ async def handle_ensure(request: Request) -> Response:
 
 
 async def handle_status(request: Request) -> Response:
-    """GET /vk-hash/status?wdtt_password=... - Check VK hash status."""
+    """GET /vk-hash/status?wdtt_password=... - Check VK hash status for user."""
+    if not _token_ok(request):
+        return json_response({"success": False, "error": "forbidden"}, status=403)
     wdtt_password = request.query.get("wdtt_password", "").strip()
     
     if not wdtt_password:

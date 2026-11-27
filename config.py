@@ -165,6 +165,20 @@ VLESS_SHORT_ID = os.getenv("VLESS_SHORT_ID", "").strip()
 VLESS_SNI = os.getenv("VLESS_SNI", "").strip()
 VLESS_FLOW = os.getenv("VLESS_FLOW", "xtls-rprx-vision").strip()
 
+# Управление пользователями VLESS-сервера (per-user UUID через xray API по SSH).
+# Выключено по умолчанию: без этих переменных бот работает с общей ссылкой.
+# При VLESS_PER_USER=true каждому клиенту выдаётся свой UUID, который добавляется
+# на сервер через `xray api adu` и удаляется через `xray api rmu` (без рестарта xray).
+VLESS_PER_USER = _as_bool("VLESS_PER_USER", False)
+VLESS_SSH_HOST = os.getenv("VLESS_SSH_HOST", "").strip()
+VLESS_SSH_PORT = _as_int("VLESS_SSH_PORT", 22)
+VLESS_SSH_USER = os.getenv("VLESS_SSH_USER", "root").strip()
+VLESS_SSH_PASSWORD = os.getenv("VLESS_SSH_PASSWORD", "").strip()
+VLESS_XRAY_BIN = os.getenv("VLESS_XRAY_BIN", "/usr/local/xray-vless/bin/xray").strip()
+VLESS_API_SERVER = os.getenv("VLESS_API_SERVER", "127.0.0.1:62790").strip()
+VLESS_INBOUND_TAG = os.getenv("VLESS_INBOUND_TAG", "vless-in").strip()
+VLESS_INBOUND_PORT = _as_int("VLESS_INBOUND_PORT", 443)
+
 
 def _duplicate_port_errors(ports: dict[str, int]) -> list[str]:
     """Ошибки о совпадающих портах (все HTTP-серверы живут в одном процессе)."""

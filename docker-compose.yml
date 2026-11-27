@@ -36,7 +36,12 @@ services:
     environment:
       DB_PATH: /app/data/bot.db
       VK_HASH_SERVICE_PORT: "8083"
-      VK_HASH_SERVICE_HOST: "0.0.0.0"
+      # Слушаем только localhost: сервис создаёт VK-вызовы по паролю клиента и
+      # не должен быть доступен извне. Если сервису нужен доступ с другого
+      # хоста (например, с VLESS-сервера) — поднимите обратный SSH-туннель
+      # или включите VK_HASH_SERVICE_TOKEN и смените host на 0.0.0.0.
+      VK_HASH_SERVICE_HOST: "127.0.0.1"
+      VK_HASH_SERVICE_TOKEN: "${VK_HASH_SERVICE_TOKEN:-}"
     volumes:
       - bot-data:/app/data
     logging:

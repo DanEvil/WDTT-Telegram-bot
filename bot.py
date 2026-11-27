@@ -84,6 +84,8 @@ from db import (
     server_active_counts,
     bind_site_telegram,
     set_customer_sub_id,
+    set_customer_vless_uuid,
+    clear_customer_vless_uuid,
     set_payment_status,
     stats,
     upsert_customer,
@@ -106,6 +108,7 @@ from plans import ALL_PLANS_BY_ID, DEVICE_ADDONS, PLANS, TRIAL
 from wdtt import WdttClient, WdttError
 from server_setup import SetupError, deploy_server
 from server_select import pick_least_loaded_server_id
+import vless_server
 
 import logging.handlers
 
@@ -483,7 +486,69 @@ async def grant_access(telegram_id: int, username: str | None, plan: dict,
         await upsert_customer(telegram_id, pwd, expires, plan["id"], server_id, username=username, sub_id=sub_id)
 
     await _ensure_vk_hash(client, pwd, server_id=server_id)
+    await _ensure_vless_user(telegram_id)
     return client, pwd, expires
+
+
+async def _ensure_vless_user(telegram_id: int) -> str | None:
+    """Выдаёт клиенту персональный UUID для VLESS и регистрирует его на сервере.
+
+    Возвращает UUID (или None, если per-user выключен/сервер недоступен).
+    UUID переиспользуется: при повторном вызове уже заведённый клиент не трогаем.
+    """
+    if not vless_server.enabled():
+        return None
+    try:
+        customer = await get_customer(telegram_id)
+    except Exception:
+        log.exception("Не удалось прочитать клиента %s для VLESS", telegram_id)
+        return None
+    if not customer:
+        return None
+
+    email = vless_server.email_for(telegram_id)
+    existing = (customer.get("vless_uuid") or "").strip()
+    if existing:
+        # UUID уже выдан: убеждаемся, что он есть на сервере (сервер мог перезапуститься/сброситься).
+        try:
+            emails = await vless_server.list_emails()
+        except Exception:
+            emails = []
+        if emails and email not in emails:
+            if await vless_server.add_user(existing, email):
+                log.info("VLESS-доступ клиента %s восстановлен на сервере", telegram_id)
+        return existing
+
+    new_uuid = str(uuid.uuid4())
+    try:
+        ok = await vless_server.add_user(new_uuid, email)
+    except Exception:
+        log.exception("Не удалось завести VLESS-доступ для клиента %s", telegram_id)
+        return None
+    if not ok:
+        return None
+    try:
+        await set_customer_vless_uuid(telegram_id, new_uuid)
+    except Exception:
+        log.exception("Не удалось сохранить VLESS UUID клиента %s", telegram_id)
+        return None
+    log.info("Клиенту %s выдан персональный VLESS-доступ", telegram_id)
+    return new_uuid
+
+
+async def _revoke_vless_user(telegram_id: int) -> None:
+    """Отзывает персональный VLESS-доступ клиента (отзыв админом или истечение)."""
+    if not vless_server.enabled():
+        return
+    email = vless_server.email_for(telegram_id)
+    try:
+        await vless_server.remove_user(email)
+    except Exception:
+        log.exception("Не удалось снять VLESS-доступ клиента %s", telegram_id)
+    try:
+        await clear_customer_vless_uuid(telegram_id)
+    except Exception:
+        log.exception("Не удалось очистить VLESS UUID клиента %s", telegram_id)
 
 
 async def _store_sub_mapping(sub_id: str, panel_base_url: str) -> None:
@@ -791,21 +856,22 @@ def plans_reply_keyboard(plans) -> ReplyKeyboardMarkup:
 
 # ---------- профиль и статус ----------
 
-def _build_vless_url(remark: str | None = None) -> str | None:
+def _build_vless_url(remark: str | None = None, vless_uuid: str | None = None) -> str | None:
     """Генерирует VLESS ссылку для подключения.
 
     Формат: vless://uuid@server:port?params#remark
     Для Reality в params добавляются pbk (public key), sid (short id), sni и flow.
+    vless_uuid — персональный UUID клиента; если не задан, берётся общий из конфига.
     """
     if not config.VLESS_ENABLED:
         return None
-    if not config.VLESS_SERVER or not config.VLESS_UUID:
+    if not config.VLESS_SERVER or not (vless_uuid or config.VLESS_UUID):
         log.warning("VLESS enabled but VLESS_SERVER or VLESS_UUID not configured")
         return None
 
     server = config.VLESS_SERVER
     port = config.VLESS_PORT
-    uuid = config.VLESS_UUID
+    uuid_value = (vless_uuid or config.VLESS_UUID).strip()
     protocol = config.VLESS_PROTOCOL
     security = (config.VLESS_SECURITY or ("tls" if config.VLESS_TLS else "none")).strip().lower()
     path = config.VLESS_PATH
@@ -854,7 +920,7 @@ def _build_vless_url(remark: str | None = None) -> str | None:
     import urllib.parse
     remark_encoded = urllib.parse.quote(name)
 
-    return f"vless://{uuid}@{server}:{port}?{query}#{remark_encoded}"
+    return f"vless://{uuid_value}@{server}:{port}?{query}#{remark_encoded}"
 
 def get_vless_only_links() -> dict:
     """Возвращает только VLESS ссылки для новых пользователей (не в базе).
@@ -869,20 +935,34 @@ def get_vless_only_links() -> dict:
     return {"vless": vless_url}
 
 
+async def _customer_vless_uuid(pwd: str) -> str | None:
+    """Персональный UUID клиента (по его паролю в панели) для VLESS-ссылки."""
+    if not pwd:
+        return None
+    try:
+        customer = await get_customer_by_password(pwd)
+    except Exception:
+        log.warning("не удалось найти клиента по паролю для VLESS-ссылки")
+        return None
+    if not customer:
+        return None
+    return (customer.get("vless_uuid") or "").strip() or None
+
+
 async def _links_section(client, pwd: str, sub_id: str | None = None, include_vless: bool = True) -> str | None:
     """Блок со ссылками подключения для iOS и Android.
 
     Если настроен SUB_DOMAIN и есть sub_id — отдаём единую ссылку на подписку.
     Иначе платформенные ссылки берём со страницы подписки панели; если их нет —
     откатываемся на универсальную wdtt:// ссылку.
-    
+
     Если include_vless=True, добавляет VLESS ссылку (для существующих пользователей).
     """
     parts = []
-    
+
     # VLESS ссылка (добавляем первой, если включена)
     if include_vless and config.VLESS_ENABLED:
-        vless_url = _build_vless_url()
+        vless_url = _build_vless_url(vless_uuid=await _customer_vless_uuid(pwd))
         if vless_url:
             parts.append(f"<b>🔐 VLESS (Reality)</b>\n<code>{html.escape(vless_url)}</code>")
     
@@ -924,10 +1004,10 @@ async def _links_section(client, pwd: str, sub_id: str | None = None, include_vl
 async def links_json(client, pwd: str, sub_id: str | None = None, include_vless: bool = True) -> dict:
     """Ссылки подключения в JSON для Mini App: {unified?, ios?, android?, windows?, universal?, vless?}."""
     out: dict = {}
-    
+
     # VLESS ссылка
     if include_vless and config.VLESS_ENABLED:
-        vless_url = _build_vless_url()
+        vless_url = _build_vless_url(vless_uuid=await _customer_vless_uuid(pwd))
         if vless_url:
             out["vless"] = vless_url
     
@@ -1943,6 +2023,7 @@ async def process_revoke(message: Message, state: FSMContext) -> None:
     except Exception as e:
         await message.answer(f"⚠️ Не удалось удалить ключ из панели: {e}")
         return
+    await _revoke_vless_user(telegram_id)
     await clear_customer(telegram_id)
     try:
         await bot.send_message(telegram_id, "⛔️ Ваш доступ к WDTT отозван администратором.")
@@ -2813,6 +2894,7 @@ async def expiry_worker() -> None:
                 except Exception:
                     log.exception("не удалось удалить истёкший ключ tg %s", c["telegram_id"])
                 if cleared:
+                    await _revoke_vless_user(c["telegram_id"])
                     await clear_customer(c["telegram_id"])
                     try:
                         await bot.send_message(
