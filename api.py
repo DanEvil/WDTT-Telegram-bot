@@ -661,17 +661,30 @@ async def h_connections(request: web.Request) -> web.Response:
         "codec": prefs.get("of_codec") or "batched",
     }
 
-    # VLESS-эквивалент openflux:// ссылки (для Happ/v2rayNG): конвертер
-    # link_converter берёт host выходной ноды из ссылки и собирает vless://
-    # на xray той же ноды. Секрет openflux наружу не уходит.
+    # Персональная openflux:// ссылка клиента: клонируем базовую ссылку exit-ноды
+    # (link_converter.personalize_link) — у каждого своя (name=tg<id>, свой doc URL
+    # если задан в настройках). Secret общий с exit-нодой и не меняется.
+    # Из этой же ссылки собираем vless:// на xray той же ноды (для Happ/v2rayNG).
     of_url = (prefs.get("of_url") or "").strip()
-    if of_url:
+    of_link = ""
+    if config.OPENFLUX_BASE_LINK:
+        try:
+            import link_converter
+            doc = of_url if of_url.startswith(("https://", "http://")) else None
+            of_link = link_converter.personalize_link(
+                config.OPENFLUX_BASE_LINK, name=f"tg{uid}", doc_url=doc)
+            out["openflux"]["link"] = of_link
+        except Exception as e:
+            log.warning("h_connections: персонализация openflux-ссылки не удалась: %s", e)
+    if not of_link and of_url.startswith("openflux://"):
+        of_link = of_url
+    if of_link:
         try:
             import link_converter
             uuid = ((customer or {}).get("vless_uuid") or config.VLESS_UUID or "").strip()
             if uuid and config.VLESS_SERVER:
                 out["vless_from_openflux"] = link_converter.openflux_to_vless(
-                    of_url,
+                    of_link,
                     vless_server=config.VLESS_SERVER,
                     vless_port=config.VLESS_PORT,
                     uuid=uuid,

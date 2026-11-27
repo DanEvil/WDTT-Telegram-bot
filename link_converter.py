@@ -65,6 +65,34 @@ def decode_openflux(link: str) -> dict:
     return cfg
 
 
+def encode_openflux(cfg: dict) -> str:
+    """Сериализует dict обратно в openflux://v1/... (зеркало share.Encode)."""
+    raw = json.dumps(cfg, separators=(",", ":")).encode()
+    comp = zlib.compressobj(9, zlib.DEFLATED, -15)
+    packed = comp.compress(raw) + comp.flush()
+    return PREFIX + base64.urlsafe_b64encode(packed).decode().rstrip("=")
+
+
+def personalize_link(base_link: str, *, name: str | None = None, doc_url: str | None = None) -> str:
+    """Клонирует базовую openflux:// ссылку exit-ноды под пользователя.
+
+    name    — метка профиля (например, tg<id>); отличается у каждого клиента.
+    doc_url — если у пользователя свой документ-транспорт (Yandex), он
+              подставляется в yandex-транспорт и в context ссылки. Secret
+              трогать нельзя: он общий с exit-нодой (иначе exit не
+              расшифрует трафик).
+    """
+    cfg = decode_openflux(base_link)
+    if name:
+        cfg["name"] = name
+    if doc_url:
+        for t in cfg.get("transports", []):
+            if t.get("type") == "yandex":
+                t["url"] = doc_url
+        cfg["context"] = doc_url
+    return encode_openflux(cfg)
+
+
 def openflux_exit_host(cfg: dict) -> str | None:
     """host выходной ноды из direct-транспорта (поле dial), иначе None."""
     for t in cfg.get("transports", []):

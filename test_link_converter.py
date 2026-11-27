@@ -9,8 +9,10 @@ from link_converter import (
     LinkError,
     build_vless_url,
     decode_openflux,
+    encode_openflux,
     openflux_exit_host,
     openflux_to_vless,
+    personalize_link,
 )
 
 
@@ -83,6 +85,36 @@ class TestConvert(unittest.TestCase):
     def test_build_vless_plain(self):
         u = build_vless_url("u", "h", 8443, security="none", flow="")
         self.assertEqual(u, "vless://u@h:8443?encryption=none&security=none&type=tcp&fp=chrome#OpenFlux-%3EVLESS")
+
+
+class TestPersonalize(unittest.TestCase):
+    def test_roundtrip_encode(self):
+        link = make_link(SAMPLE)
+        self.assertEqual(decode_openflux(link)["name"], "exit-78")
+        back = decode_openflux(encode_openflux(SAMPLE))
+        self.assertEqual(back["secret"], SAMPLE["secret"])
+        self.assertEqual(back["transports"], SAMPLE["transports"])
+
+    def test_personalize_name_and_doc(self):
+        base = make_link(SAMPLE)
+        own = personalize_link(base, name="tg83137873", doc_url="https://disk.yandex.ru/i/XXXX")
+        cfg = decode_openflux(own)
+        self.assertEqual(cfg["name"], "tg83137873")
+        self.assertEqual(cfg["context"], "https://disk.yandex.ru/i/XXXX")
+        yandex = [t for t in cfg["transports"] if t["type"] == "yandex"][0]
+        self.assertEqual(yandex["url"], "https://disk.yandex.ru/i/XXXX")
+        # secret не меняется — он общий с exit-нодой
+        self.assertEqual(cfg["secret"], SAMPLE["secret"])
+        # каждый пользователь получает разную ссылку
+        other = personalize_link(base, name="tg999")
+        self.assertNotEqual(own, other)
+
+    def test_personalize_keeps_shared_doc_by_default(self):
+        base = make_link(SAMPLE)
+        cfg = decode_openflux(personalize_link(base, name="tg1"))
+        self.assertEqual(cfg.get("context", ""), SAMPLE.get("context", ""))
+        yandex = [t for t in cfg["transports"] if t["type"] == "yandex"][0]
+        self.assertEqual(yandex["url"], SAMPLE["transports"][1]["url"])
 
 
 if __name__ == "__main__":

@@ -81,6 +81,10 @@ APP_WINDOWS_URL = os.getenv(
 # Только серверные (env); НЕ отдаются пользователям и больше не редактируются из админ-панели.
 OPENFLUX_URL = os.getenv("OPENFLUX_URL", "").strip()
 OPENFLUX_SECRET = os.getenv("OPENFLUX_SECRET", "").strip()
+# Базовая openflux://v1/ ссылка exit-ноды (печатается --share в journal openflux.service).
+# Из неё link_converter.personalize_link делает персональную ссылку каждому клиенту
+# (свой name, свой doc URL если задан в настройках клиента); secret остаётся общим.
+OPENFLUX_BASE_LINK = os.getenv("OPENFLUX_BASE_LINK", "").strip()
 
 # Бот
 DB_PATH = os.getenv("DB_PATH", "bot.db").strip()
