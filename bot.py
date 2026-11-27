@@ -586,6 +586,31 @@ async def migrate_sub_ids() -> None:
     log.info("migrate_sub_ids: миграция завершена")
 
 
+async def backfill_vless_users() -> None:
+    """Выдаёт персональный VLESS-доступ всем активным клиентам без него.
+
+    Запускается при старте бота: после перехода на per-user старые клиенты
+    получают свой UUID, а общая ссылка перестаёт быть единственным входом.
+    """
+    if not vless_server.enabled():
+        return
+    try:
+        customers = await get_active_customers()
+    except Exception:
+        log.exception("backfill_vless_users: не удалось прочитать клиентов")
+        return
+    pending = [c for c in customers if not (c.get("vless_uuid") or "").strip()]
+    if not pending:
+        return
+    log.info("backfill_vless_users: %d клиентов без персонального VLESS-доступа", len(pending))
+    for c in pending:
+        try:
+            await _ensure_vless_user(c["telegram_id"])
+        except Exception:
+            log.exception("backfill_vless_users: ошибка для tg %s", c.get("telegram_id"))
+    log.info("backfill_vless_users: завершено")
+
+
 # Панель хранит cookies только одного VK-профиля (vk_cookies, id=1). Смена
 # cookies и создание вызова обязаны быть атомарными: иначе параллельная выдача
 # перетрёт cookies, и хеш будет выдан не тому VK-аккаунту, который посчитан.
@@ -3208,6 +3233,16 @@ async def main() -> None:
     # Миграция: генерируем sub_id для существующих пользователей без него
     if config.SUB_DOMAIN and redis_client:
         await migrate_sub_ids()
+
+    # Миграция: выдаём персональный VLESS-доступ активным клиентам без него
+    if vless_server.enabled():
+        async def _bg_vless_backfill() -> None:
+            try:
+                await asyncio.sleep(20)  # даём боту подняться
+                await backfill_vless_users()
+            except Exception as e:
+                log.warning("фоновый backfill VLESS-доступов: %s", e)
+        asyncio.create_task(_bg_vless_backfill())
 
     # Миграция: добиваем VK-хеши до 4 у существующих клиентов (фоново)
     if not config.WDTT_VK_HASH:
