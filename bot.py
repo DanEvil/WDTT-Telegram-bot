@@ -983,7 +983,11 @@ def get_vless_only_links() -> dict:
 
 
 async def _customer_vless_uuid(pwd: str) -> str | None:
-    """Персональный UUID клиента (по его паролю в панели) для VLESS-ссылки."""
+    """Персональный UUID клиента (по его паролю в панели) для VLESS-ссылки.
+
+    В per-user режиме UUID выдаётся по требованию: у клиента, который ещё
+    не получил доступ, он заводится тут же.
+    """
     if not pwd:
         return None
     try:
@@ -993,7 +997,14 @@ async def _customer_vless_uuid(pwd: str) -> str | None:
         return None
     if not customer:
         return None
-    return (customer.get("vless_uuid") or "").strip() or None
+    existing = (customer.get("vless_uuid") or "").strip()
+    if existing:
+        return existing
+    if vless_server.enabled():
+        telegram_id = customer.get("telegram_id")
+        if telegram_id:
+            return await _ensure_vless_user(int(telegram_id))
+    return None
 
 
 async def _links_section(client, pwd: str, sub_id: str | None = None, include_vless: bool = True) -> str | None:
