@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WDTT — схема работы сервера</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      color: var(--foreground);
+      min-height: 100vh;
+      padding: 1.5rem;
+    }
+    .container { max-width: 1240px; margin: 0 auto; }
+    .header-row { display: flex; align-items: center; gap: .75rem; margin-bottom: .25rem; }
+    .pulse-dot { width: 12px; height: 12px; background: #22d3ee; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+    h1 { font-size: 1.4rem; font-weight: 700; }
+    .subtitle { color: var(--muted-foreground); font-size: .8rem; margin: .25rem 0 1.25rem 1.9rem; }
+    .diagram-container {
+      background: var(--card);
+      border-radius: 1rem;
+      border: 1px solid var(--border);
+      padding: 1rem;
+      overflow-x: auto;
+    }
+    svg { width: 100%; min-width: 1000px; display: block; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; margin-top: 1.25rem; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: .75rem; padding: 1rem; }
+    .card-header { display: flex; align-items: center; gap: .5rem; margin-bottom: .6rem; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .cyan { background:#22d3ee; } .emerald { background:#34d399; } .amber { background:#fbbf24; } .rose { background:#fb7185; } .violet { background:#a78bfa; }
+    .card h3 { font-size: .85rem; }
+    .card ul { list-style: none; color: var(--muted-foreground); font-size: .74rem; }
+    .card li { margin-bottom: .3rem; }
+    .footer { text-align:center; color: var(--muted-foreground); font-size:.72rem; margin-top:1.25rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header-row">
+      <div class="pulse-dot"></div>
+      <h1>WDTT — схема работы сервера</h1>
+    </div>
+    <p class="subtitle">Клиенты → xray (VLESS REALITY / XHTTP) → wdtt-socks (netns) → VK TURN-релеи → интернет · панель и бот управляют доступом</p>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1160 800">
+        <defs>
+          <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/>
+          </marker>
+          <marker id="arrowRose" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fb7185"/>
+          </marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="var(--border)" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#grid)"/>
+
+        <!-- ================= КЛИЕНТЫ ================= -->
+        <rect x="20" y="330" width="180" height="150" rx="8" fill="var(--card)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="110" y="355" fill="var(--foreground)" font-size="12" font-weight="700" text-anchor="middle">Клиенты</text>
+        <text x="110" y="375" fill="var(--muted-foreground)" font-size="9" text-anchor="middle">iOS / Android / Win / Linux</text>
+        <text x="110" y="397" fill="#22d3ee" font-size="9" text-anchor="middle">vless://…@78.17.16.23:443</text>
+        <text x="110" y="411" fill="#22d3ee" font-size="9" text-anchor="middle">  REALITY, sni=ya.ru</text>
+        <text x="110" y="429" fill="#34d399" font-size="9" text-anchor="middle">vless://…type=xhttp</text>
+        <text x="110" y="443" fill="#34d399" font-size="9" text-anchor="middle">  app.ko-gateway.ru/xhttp</text>
+        <text x="110" y="465" fill="#a78bfa" font-size="9" text-anchor="middle">wdtt:// (панель :2860)</text>
+
+        <!-- ================= БОТ-СЕРВЕР ================= -->
+        <rect x="240" y="24" width="450" height="150" rx="12" fill="rgba(251,191,36,0.05)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="252" y="44" fill="#fbbf24" font-size="10" font-weight="700">2.56.120.156 — бот + фронтенд (docker)</text>
+
+        <rect x="260" y="60" width="200" height="90" rx="6" fill="var(--card)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="360" y="82" fill="var(--foreground)" font-size="11" font-weight="600" text-anchor="middle">traefik :443</text>
+        <text x="360" y="98" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">app/auth.ko-gateway.ru (LE)</text>
+        <text x="360" y="112" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">Host(app) && PathPrefix(/xhttp)</text>
+        <text x="360" y="126" fill="#34d399" font-size="8" text-anchor="middle">→ http://78.17.16.23:20500</text>
+        <text x="360" y="140" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">остальное → сайт/панель</text>
+
+        <rect x="480" y="60" width="190" height="90" rx="6" fill="var(--card)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="575" y="82" fill="var(--foreground)" font-size="11" font-weight="600" text-anchor="middle">wdtt-bot (aiogram)</text>
+        <text x="575" y="98" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">Telegram-бот, /api, подписки</text>
+        <text x="575" y="112" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">генерит vless:// и vless_xhttp://</text>
+        <text x="575" y="126" fill="#fb7185" font-size="8" text-anchor="middle">per-user UUID → SSH :22</text>
+        <text x="575" y="140" fill="#fb7185" font-size="8" text-anchor="middle">xray api adu/rmu :62790</text>
+
+        <!-- ================= VPN-НОДА ================= -->
+        <rect x="240" y="214" width="450" height="500" rx="12" fill="rgba(251,191,36,0.05)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="252" y="234" fill="#fbbf24" font-size="10" font-weight="700">78.17.16.23 — VPN-нода (xray-vless + wdtt-socks + панель)</text>
+
+        <!-- xray -->
+        <rect x="260" y="254" width="200" height="170" rx="8" fill="var(--card)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="360" y="276" fill="var(--foreground)" font-size="12" font-weight="700" text-anchor="middle">xray-vless</text>
+        <text x="360" y="294" fill="#22d3ee" font-size="8" text-anchor="middle">in: vless-in :443 TCP+REALITY</text>
+        <text x="360" y="306" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">   sni=ya.ru, flow=vision, per-user UUID</text>
+        <text x="360" y="322" fill="#34d399" font-size="8" text-anchor="middle">in: vless-xhttp-in :20500 XHTTP</text>
+        <text x="360" y="334" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">   packet-up, uplinkDataPlacement=header</text>
+        <text x="360" y="350" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">api :62790 (adu/rmu/inbounduser)</text>
+        <text x="360" y="368" fill="#fbbf24" font-size="8" text-anchor="middle">routing: geoip:private→blocked</text>
+        <text x="360" y="380" fill="#fbbf24" font-size="8" text-anchor="middle">udp/53→direct, geoip:ru→direct</text>
+        <text x="360" y="392" fill="#fbbf24" font-size="8" text-anchor="middle">остальное→wdtt-out</text>
+        <text x="360" y="412" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">sync.service: users.json → оба инбаунда</text>
+
+        <!-- outbounds -->
+        <rect x="260" y="444" width="200" height="110" rx="8" fill="var(--card)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="360" y="466" fill="var(--foreground)" font-size="11" font-weight="700" text-anchor="middle">outbounds</text>
+        <text x="360" y="484" fill="#22d3ee" font-size="8" text-anchor="middle">wdtt-out → socks5h 10.255.254.2:1080</text>
+        <text x="360" y="500" fill="#34d399" font-size="8" text-anchor="middle">direct (RU-сайты, DNS) — мимо VPN</text>
+        <text x="360" y="516" fill="#fb7185" font-size="8" text-anchor="middle">blocked (приватные сети)</text>
+        <text x="360" y="540" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">exit IP = 78.17.16.23 (NAT на ноде)</text>
+
+        <!-- панель -->
+        <rect x="480" y="254" width="190" height="86" rx="8" fill="var(--card)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="575" y="276" fill="var(--foreground)" font-size="11" font-weight="600" text-anchor="middle">панель WDTT :2860</text>
+        <text x="575" y="292" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">users, лимиты, трафик</text>
+        <text x="575" y="306" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">выдаёт wdtt:// ссылки клиентам</text>
+        <text x="575" y="320" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">/etc/wdtt/panel.db, users.json</text>
+
+        <!-- netns wdtt-socks -->
+        <rect x="480" y="364" width="190" height="150" rx="8" fill="transparent" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="488" y="380" fill="#94a3b8" font-size="8" font-weight="700">netns wdttx</text>
+        <rect x="490" y="388" width="170" height="116" rx="6" fill="var(--card)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="575" y="408" fill="var(--foreground)" font-size="11" font-weight="700" text-anchor="middle">wdtt-socks</text>
+        <text x="575" y="424" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">SOCKS5 10.255.254.2:1080</text>
+        <text x="575" y="438" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">core: UDP 127.0.0.1:19000</text>
+        <text x="575" y="452" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">TUN ⇄ veth: host .1/24 ↔ ns .2/24</text>
+        <text x="575" y="470" fill="#22d3ee" font-size="8" text-anchor="middle">DTLS :56000 + WRAP obfs</text>
+        <text x="575" y="484" fill="#22d3ee" font-size="8" text-anchor="middle">WG :56001 · RAW :56003</text>
+        <text x="575" y="498" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">движок wg-turn-client/core</text>
+
+        <!-- ================= VK CLOUD ================= -->
+        <rect x="740" y="214" width="210" height="190" rx="12" fill="rgba(167,139,250,0.06)" stroke="#a78bfa" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="752" y="234" fill="#a78bfa" font-size="10" font-weight="700">VK Cloud — TURN media relays</text>
+        <rect x="760" y="248" width="170" height="130" rx="6" fill="var(--card)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="845" y="270" fill="var(--foreground)" font-size="11" font-weight="600" text-anchor="middle">mtr*.vk.com :443</text>
+        <text x="845" y="288" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">DTLS/TURN relay (UDP over 443)</text>
+        <text x="845" y="304" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">WRAP-обфускация (RTP-like)</text>
+        <text x="845" y="320" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">vk_hash → звонок → relay credentials</text>
+        <text x="845" y="342" fill="#a78bfa" font-size="8" text-anchor="middle">маскировка под VK-видеозвонок</text>
+        <text x="845" y="358" fill="var(--muted-foreground)" font-size="8" text-anchor="middle">в белых списках РФ проходит как VK</text>
+
+        <!-- ================= ИНТЕРНЕТ ================= -->
+        <rect x="740" y="470" width="210" height="90" rx="8" fill="var(--card)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="845" y="498" fill="var(--foreground)" font-size="12" font-weight="700" text-anchor="middle">Интернет</text>
+        <text x="845" y="516" fill="var(--muted-foreground)" font-size="9" text-anchor="middle">весь трафик выходит с IP</text>
+        <text x="845" y="530" fill="#22d3ee" font-size="9" font-weight="600" text-anchor="middle">78.17.16.23</text>
+
+        <!-- ================= СВЯЗИ ================= -->
+        <!-- клиенты → xray REALITY -->
+        <line x1="200" y1="370" x2="258" y2="330" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="150" y="330" fill="#22d3ee" font-size="8" text-anchor="middle">VLESS :443</text>
+        <!-- клиенты → traefik (xhttp) -->
+        <path d="M 200 440 L 228 440 L 228 105 L 258 105" fill="none" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="60" y="240" fill="#34d399" font-size="8">XHTTP :443</text>
+        <!-- traefik → xray :20500 -->
+        <line x1="360" y1="152" x2="360" y2="252" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="372" y="200" fill="#34d399" font-size="8">/xhttp → :20500</text>
+        <!-- xray outbounds → socks -->
+        <line x1="460" y1="500" x2="488" y2="470" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="474" y="530" fill="#22d3ee" font-size="8" text-anchor="middle">wdtt-out</text>
+        <!-- socks → VK TURN -->
+        <path d="M 660 440 C 710 440 700 320 758 320" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="700" y="395" fill="#22d3ee" font-size="8">DTLS+WRAP</text>
+        <!-- VK → интернет -->
+        <line x1="845" y1="406" x2="845" y2="468" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <!-- direct → интернет -->
+        <path d="M 460 540 C 600 560 640 520 738 520" fill="none" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+        <text x="590" y="565" fill="#34d399" font-size="8">direct: geoip:ru, DNS udp/53</text>
+        <!-- bot → xray api (control) -->
+        <path d="M 560 152 L 560 200 L 462 200 L 462 300" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,4" marker-end="url(#arrowRose)"/>
+        <text x="530" y="192" fill="#fb7185" font-size="8">adu/rmu :62790</text>
+        <!-- панель → клиенты (wdtt links) -->
+        <path d="M 480 300 L 300 300 L 202 380" fill="none" stroke="#a78bfa" stroke-width="1.2" stroke-dasharray="4,4" marker-end="url(#arrowRose)"/>
+        <text x="330" y="292" fill="#a78bfa" font-size="8">wdtt:// ссылки</text>
+
+        <!-- legend -->
+        <text x="960" y="600" fill="var(--foreground)" font-size="10" font-weight="700">Легенда</text>
+        <line x1="960" y1="616" x2="978" y2="616" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="986" y="620" fill="var(--muted-foreground)" font-size="8">VPN-трафик (через WDTT)</text>
+        <line x1="960" y1="634" x2="978" y2="634" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+        <text x="986" y="638" fill="var(--muted-foreground)" font-size="8">Direct (мимо VPN)</text>
+        <line x1="960" y1="652" x2="978" y2="652" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,4" marker-end="url(#arrowRose)"/>
+        <text x="986" y="656" fill="var(--muted-foreground)" font-size="8">Управление (API/SSH)</text>
+        <rect x="960" y="666" width="18" height="12" rx="3" fill="transparent" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="986" y="676" fill="var(--muted-foreground)" font-size="8">netns / граница</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-header"><div class="card-dot cyan"></div><h3>Вход: VLESS-инбаунды xray</h3></div>
+        <ul>
+          <li>• vless-in :443 — TCP+REALITY, sni=ya.ru, flow=xtls-rprx-vision</li>
+          <li>• vless-xhttp-in :20500 — XHTTP packet-up, спрятан за app.ko-gateway.ru (traefik → /xhttp), для белых списков РФ</li>
+          <li>• per-user UUID: бот заводит через xray api adu :62790, sync.service перезаливает users.json после рестарта</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot amber"></div><h3>Маршрутизация xray</h3></div>
+        <ul>
+          <li>• geoip:private → blocked</li>
+          <li>• udp/53 и geoip:ru → direct (RU-сайты и DNS идут напрямую, мимо VPN)</li>
+          <li>• всё остальное → wdtt-out (SOCKS5 в netns)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot emerald"></div><h3>Выход: WDTT через VK TURN</h3></div>
+        <ul>
+          <li>• wdtt-socks в netns wdttx: SOCKS5 10.255.254.2:1080 → core (UDP 127.0.0.1:19000) → TUN ⇄ veth</li>
+          <li>• core → DTLS :56000 + WRAP к TURN-релеям VK (маскировка под видеозвонок)</li>
+          <li>• выходной IP — 78.17.16.23; панель :2860 выдаёт wdtt:// ссылки</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="footer">WDTT server topology · 2.56.120.156 (бот/traefik) + 78.17.16.23 (xray-vless + wdtt-socks + панель) · xray-vless-sync.service</p>
+  </div>
+</body>
+</html>
