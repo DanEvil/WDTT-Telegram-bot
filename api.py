@@ -660,6 +660,31 @@ async def h_connections(request: web.Request) -> web.Response:
         "inbound": prefs.get("of_inbound") or "socks5",
         "codec": prefs.get("of_codec") or "batched",
     }
+
+    # VLESS-эквивалент openflux:// ссылки (для Happ/v2rayNG): конвертер
+    # link_converter берёт host выходной ноды из ссылки и собирает vless://
+    # на xray той же ноды. Секрет openflux наружу не уходит.
+    of_url = (prefs.get("of_url") or "").strip()
+    if of_url:
+        try:
+            import link_converter
+            uuid = ((customer or {}).get("vless_uuid") or config.VLESS_UUID or "").strip()
+            if uuid and config.VLESS_SERVER:
+                out["vless_from_openflux"] = link_converter.openflux_to_vless(
+                    of_url,
+                    vless_server=config.VLESS_SERVER,
+                    vless_port=config.VLESS_PORT,
+                    uuid=uuid,
+                    pbk=config.VLESS_PUBLIC_KEY,
+                    sid=config.VLESS_SHORT_ID,
+                    sni=config.VLESS_SNI,
+                    fp=config.VLESS_FINGERPRINT,
+                    flow=config.VLESS_FLOW,
+                    security=config.VLESS_SECURITY,
+                    remark=config.VLESS_REMARK,
+                )
+        except Exception as e:
+            log.warning("h_connections: конвертация openflux->vless не удалась: %s", e)
     return web.json_response(out)
 
 
