@@ -1063,9 +1063,13 @@ async def _links_section(client, pwd: str, sub_id: str | None = None, include_vl
 
     # VLESS ссылка (добавляем первой, если включена)
     if include_vless and config.VLESS_ENABLED:
-        vless_url = _build_vless_url(vless_uuid=await _customer_vless_uuid(pwd))
-        if vless_url:
-            parts.append(f"<b>🔐 VLESS (Reality)</b>\n<code>{html.escape(vless_url)}</code>")
+        if config.VLESS_SUB_URL:
+            # Одна общая VLESS-подписка (в Happ/v2ray раскрывается в серверы)
+            parts.append(f"<b>🔐 VLESS подписка (Happ / v2ray)</b>\n<code>{html.escape(config.VLESS_SUB_URL)}</code>")
+        else:
+            vless_url = _build_vless_url(vless_uuid=await _customer_vless_uuid(pwd))
+            if vless_url:
+                parts.append(f"<b>🔐 VLESS (Reality)</b>\n<code>{html.escape(vless_url)}</code>")
     
     # Если есть единый домен подписки и sub_id — отдаём унифицированную ссылку,
     # но только если Redis доступен (иначе nginx не найдёт маппинг)
@@ -1108,15 +1112,19 @@ async def links_json(client, pwd: str, sub_id: str | None = None, include_vless:
 
     # VLESS ссылка
     if include_vless and config.VLESS_ENABLED:
-        vless_uuid = await _customer_vless_uuid(pwd)
-        vless_url = _build_vless_url(vless_uuid=vless_uuid)
-        if vless_url:
-            out["vless"] = vless_url
-        # VLESS+XHTTP ссылка (белые списки РФ): тот же персональный UUID,
-        # но транспорт — XHTTP через фронтенд-домен.
-        xhttp_url = _build_vless_xhttp_url(vless_uuid=vless_uuid)
-        if xhttp_url:
-            out["vless_xhttp"] = xhttp_url
+        if config.VLESS_SUB_URL:
+            # Одна общая подписка вместо отдельных ссылок (раскрывается в серверы в Happ/v2ray)
+            out["vless_sub"] = config.VLESS_SUB_URL
+        else:
+            vless_uuid = await _customer_vless_uuid(pwd)
+            vless_url = _build_vless_url(vless_uuid=vless_uuid)
+            if vless_url:
+                out["vless"] = vless_url
+            # VLESS+XHTTP ссылка (белые списки РФ): тот же персональный UUID,
+            # но транспорт — XHTTP через фронтенд-домен.
+            xhttp_url = _build_vless_xhttp_url(vless_uuid=vless_uuid)
+            if xhttp_url:
+                out["vless_xhttp"] = xhttp_url
     
     if config.SUB_DOMAIN and sub_id and redis_client:
         try:
