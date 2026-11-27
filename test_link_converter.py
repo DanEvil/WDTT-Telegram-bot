@@ -9,10 +9,12 @@ from link_converter import (
     LinkError,
     build_vless_url,
     decode_openflux,
+    decode_wdtt,
     encode_openflux,
     openflux_exit_host,
     openflux_to_vless,
     personalize_link,
+    wdtt_to_vless,
 )
 
 
@@ -115,6 +117,66 @@ class TestPersonalize(unittest.TestCase):
         self.assertEqual(cfg.get("context", ""), SAMPLE.get("context", ""))
         yandex = [t for t in cfg["transports"] if t["type"] == "yandex"][0]
         self.assertEqual(yandex["url"], SAMPLE["transports"][1]["url"])
+
+
+class TestWdttToVless(unittest.TestCase):
+    UUID = "fb7d3ea5-1111-2222-3333-444455556666"
+
+    def _b64(self, obj):
+        import base64, json
+        return "wdtt://" + base64.b64encode(json.dumps(obj, separators=(",", ":")).encode()).decode()
+
+    def test_universal_payload(self):
+        link = self._b64({"ps": "WDTT", "add": "78.17.16.23", "dtls": 56000, "wg": 56001, "pass": "pw", "hash": "h1,h2"})
+        d = decode_wdtt(link)
+        self.assertEqual(d["host"], "78.17.16.23")
+        self.assertEqual(d["dtls"], 56000)
+        self.assertEqual(d["wg"], 56001)
+        self.assertEqual(d["raw"], 56003)  # dtls + 3
+        v = wdtt_to_vless(link, uuid=self.UUID, pbk="pbk", sid="sid", security="reality")
+        self.assertTrue(v.startswith(f"vless://{self.UUID}@78.17.16.23:443?"))
+        self.assertIn("security=reality", v)
+        self.assertIn("pbk=pbk", v)
+        # пароль/hash из wdtt не утекают в vless
+        self.assertNotIn("pw", v.split("#")[0])
+
+    def test_real_panel_payload_ip_field(self):
+        # реальный payload панели: host в поле ip, есть raw/csqtt/sub
+        link = self._b64({"vpn": "K.O.Gateway", "name": "ADMIN", "ip": "78.17.16.23",
+                          "dtls": 56000, "raw": 56003, "csqtt": 46000, "pass": "secret", "hash": "h"})
+        d = decode_wdtt(link)
+        self.assertEqual(d["host"], "78.17.16.23")
+        self.assertEqual(d["raw"], 56003)
+        self.assertEqual(d["name"], "ADMIN")
+        v = wdtt_to_vless(link, uuid=self.UUID)
+        self.assertIn("@78.17.16.23:443?", v)
+        self.assertNotIn("secret", v.split("#")[0])
+
+    def test_colon_format(self):
+        link = "wdtt://78.17.16.23:56000:56001:56003:local:pw123:h1,h2#myname"
+        d = decode_wdtt(link)
+        self.assertEqual((d["host"], d["dtls"], d["wg"], d["raw"]), ("78.17.16.23", 56000, 56001, 56003))
+        self.assertEqual(d["pass"], "pw123")
+        self.assertEqual(d["hash"], "h1,h2")
+        self.assertEqual(d["name"], "myname")
+        v = wdtt_to_vless(link, vless_server="", uuid=self.UUID, remark="")
+        self.assertIn("#myname", v)
+
+    def test_vless_server_overrides_host(self):
+        link = self._b64({"add": "10.0.0.5", "dtls": 56000})
+        v = wdtt_to_vless(link, vless_server="78.17.16.23", vless_port=443, uuid=self.UUID)
+        self.assertIn("@78.17.16.23:443?", v)
+
+    def test_requires_uuid(self):
+        link = self._b64({"add": "78.17.16.23", "dtls": 56000})
+        with self.assertRaises(LinkError):
+            wdtt_to_vless(link, uuid="")
+
+    def test_bad_link(self):
+        with self.assertRaises(LinkError):
+            decode_wdtt("vless://abc")
+        with self.assertRaises(LinkError):
+            decode_wdtt("wdtt://!!!notb64!!!")
 
 
 if __name__ == "__main__":

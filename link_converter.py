@@ -167,6 +167,101 @@ def openflux_to_vless(
     )
 
 
+def wdtt_to_vless(
+    link: str,
+    *,
+    vless_server: str = "",
+    vless_port: int = 443,
+    uuid: str,
+    pbk: str = "",
+    sid: str = "",
+    sni: str = "",
+    fp: str = "chrome",
+    flow: str = "xtls-rprx-vision",
+    security: str = "reality",
+    remark: str = "",
+) -> str:
+    """Конвертирует wdtt:// ссылку в vless:// на xray той же ноды.
+
+    Поддерживает оба формата панели:
+      универсальный  wdtt://base64({"add": host, "dtls": …, "wg": …, "pass": …, "hash": …})
+      colon         wdtt://host:dtls:wg:local:pass:hash[,hash…][#имя]
+    Хост для vless берётся из vless_server, иначе из поля add/host ссылки.
+    uuid — персональный vless_uuid клиента из панели (обязателен).
+    Пароль/hash из wdtt-ссылки в vless не переносятся — они не нужны xray.
+    """
+    d = decode_wdtt(link)
+    host = (vless_server or "").strip() or d["host"]
+    if not host:
+        raise LinkError("wdtt link has no host and vless_server is empty")
+    if not (uuid or "").strip():
+        raise LinkError("uuid (vless_uuid клиента) is required")
+    return build_vless_url(
+        uuid=uuid.strip(),
+        server=host,
+        port=int(vless_port or 443),
+        security=security,
+        sni=sni,
+        fp=fp,
+        pbk=pbk,
+        sid=sid,
+        flow=flow,
+        remark=remark or d.get("name") or "WDTT->VLESS",
+    )
+
+
+def decode_wdtt(link: str) -> dict:
+    """Парсит wdtt:// ссылку (оба формата панели) в dict.
+
+    Возвращает {'host','dtls','wg','raw','pass','hash','name'}.
+    raw = DTLS+3 (прямой порт, как в wdtt-socks RawDirectPort=auto).
+    """
+    link = (link or "").strip()
+    if not link.startswith("wdtt://"):
+        raise LinkError("not a wdtt:// link")
+    core, _, name = link[len("wdtt://"):].partition("#")
+    # универсальный формат — base64 JSON (в base64 нет ':')
+    if core and ":" not in core:
+        try:
+            obj = json.loads(base64.b64decode(core + "=" * (-len(core) % 4)).decode("utf-8"))
+        except Exception as e:
+            raise LinkError(f"bad wdtt base64/json payload: {e}") from e
+        if not isinstance(obj, dict):
+            raise LinkError("wdtt payload is not an object")
+        host = str(obj.get("add") or obj.get("ip") or obj.get("host") or obj.get("server") or "")
+        if not host:
+            raise LinkError("wdtt payload has no host field (add/ip)")
+        dtls = int(obj.get("dtls") or 0)
+        return {
+            "host": host,
+            "dtls": dtls,
+            "wg": int(obj.get("wg") or 0),
+            "raw": int(obj.get("raw") or (dtls + 3)),
+            "pass": str(obj.get("pass") or ""),
+            "hash": str(obj.get("hash") or ""),
+            "name": name or str(obj.get("name") or ""),
+        }
+    # colon-формат: host:dtls:wg[:raw]:local:pass:hash[,hash…]  (raw опционален, иначе dtls+3)
+    f = core.split(":")
+    if len(f) < 3 or not f[0]:
+        raise LinkError("bad wdtt colon link (need host:dtls:wg:…)")
+    try:
+        dtls = int(f[1])
+        wg = int(f[2])
+    except ValueError as e:
+        raise LinkError(f"bad ports in wdtt link: {e}") from e
+    raw = int(f[3]) if len(f) > 3 and f[3].isdigit() else dtls + 3
+    return {
+        "host": f[0],
+        "dtls": dtls,
+        "wg": wg,
+        "raw": raw,
+        "pass": f[-2] if len(f) >= 6 else "",
+        "hash": f[-1] if len(f) >= 6 else "",
+        "name": name,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="openflux:// -> vless:// converter")
     p.add_argument("link", help="openflux://v1/... link")

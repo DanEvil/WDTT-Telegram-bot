@@ -643,6 +643,24 @@ async def h_connections(request: web.Request) -> web.Response:
             links = await b.links_json(client, customer["wdtt_password"], customer.get("sub_id"), include_vless=True)
             if links:
                 out["wdtt"] = links.get("windows") or links.get("universal") or links.get("android")
+            # vless-эквивалент wdtt:// ссылки: тот же хост (xray ноды), персональный uuid клиента
+            wdtt_link = out.get("wdtt") or ""
+            uuid = ((customer or {}).get("vless_uuid") or config.VLESS_UUID or "").strip()
+            if wdtt_link and uuid:
+                import link_converter
+                out["vless_from_wdtt"] = link_converter.wdtt_to_vless(
+                    wdtt_link,
+                    vless_server=config.VLESS_SERVER,
+                    vless_port=config.VLESS_PORT,
+                    uuid=uuid,
+                    pbk=config.VLESS_PUBLIC_KEY,
+                    sid=config.VLESS_SHORT_ID,
+                    sni=config.VLESS_SNI,
+                    fp=config.VLESS_FINGERPRINT,
+                    flow=config.VLESS_FLOW,
+                    security=config.VLESS_SECURITY,
+                    remark=config.VLESS_REMARK,
+                )
         except Exception as e:
             log.warning("h_connections: панель недоступна для uid %s: %s", uid, e)
 
