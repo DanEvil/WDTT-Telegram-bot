@@ -290,6 +290,7 @@ async def vless_sub(request: web.Request) -> web.Response:
     payload = base64.b64encode("\n".join(links).encode("utf-8")).decode("ascii")
     return web.Response(text=payload, content_type="text/plain",
                         headers={"Content-Disposition": "attachment; filename=sub.txt",
+                                 "Cache-Control": "no-store",
                                  "Access-Control-Allow-Origin": "*"})
 
 

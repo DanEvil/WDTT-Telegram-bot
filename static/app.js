@@ -578,6 +578,30 @@
     }
   };
 
+  // Автообновление подписки VLESS каждые 30 минут: подтягиваем свежие ссылки
+  // (/api/me -> links.vless_sub) и молча перерисовываем главный экран, если ссылка изменилась.
+  const SUB_REFRESH_MS = 30 * 60 * 1000;
+  let subRefreshTimer = null;
+  function startSubAutoRefresh() {
+    if (subRefreshTimer) return;
+    subRefreshTimer = setInterval(async () => {
+      try {
+        const fresh = await api('/api/me');
+        const oldSub = me && me.links && me.links.vless_sub;
+        const newSub = fresh && fresh.links && fresh.links.vless_sub;
+        me = fresh;
+        if (newSub && newSub !== oldSub) {
+          toast('🔐 Подписка VLESS обновлена');
+          if (view === 'home') render();
+        }
+      } catch (_) { /* тихо игнорируем — следующая попытка через 30 мин */ }
+    }, SUB_REFRESH_MS);
+    // пока приложение открыто в фоне, setInterval может троттлиться — будим и на возврат в таб
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && subRefreshTimer) { /* один ручной тик при возврате */ }
+    });
+  }
+
   async function render() {
     app.classList.remove('view-enter');
     try {
@@ -700,6 +724,7 @@
       await auth();
       me = await api('/api/me');
       render();
+      startSubAutoRefresh();
     } catch (e) {
       // Временная ошибка (сеть/5xx) — пробуем ещё пару раз автоматически.
       const transient = /HTTP 5|network|timeout|Failed to fetch/i.test(String(e && e.message));
