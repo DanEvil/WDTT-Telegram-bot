@@ -1,0 +1,66 @@
+http:
+  middlewares:
+    redirect-to-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+  routers:
+    koauth_http:
+      rule: Host(`auth.ko-gateway.ru`)
+      entryPoints: [web]
+      service: koauth
+      middlewares:
+        - redirect-to-https
+    koapp_http:
+      rule: Host(`app.ko-gateway.ru`)
+      entryPoints: [web]
+      service: koapp
+      middlewares:
+        - redirect-to-https
+    koapp_xhttp_of:
+      rule: Host(`app.ko-gateway.ru`) && PathPrefix(`/xhttp-of`)
+      entryPoints: [websecure]
+      priority: 200
+      tls:
+        certResolver: letsencrypt
+      service: koapp_xhttp_of
+    koapp_xhttp:
+      rule: Host(`app.ko-gateway.ru`) && PathPrefix(`/xhttp`)
+      entryPoints: [websecure]
+      priority: 100
+      tls:
+        certResolver: letsencrypt
+      service: koapp_xhttp
+    koauth:
+      rule: Host(`auth.ko-gateway.ru`)
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: koauth
+    koapp:
+      rule: Host(`app.ko-gateway.ru`)
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: koapp
+  services:
+    koauth:
+      loadBalancer:
+        servers:
+          - url: http://host.docker.internal:8080
+    koapp:
+      loadBalancer:
+        servers:
+          - url: http://host.docker.internal:8082
+    koapp_xhttp:
+      loadBalancer:
+        servers:
+          - url: http://78.17.16.23:20500
+    koapp_xhttp_of:
+      loadBalancer:
+        servers:
+          - url: http://78.17.16.23:20501
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
