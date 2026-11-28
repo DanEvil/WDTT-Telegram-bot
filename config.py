@@ -162,7 +162,7 @@ VLESS_PATH = os.getenv("VLESS_PATH", "").strip()  # path для xhttp/ws
 VLESS_HOST = os.getenv("VLESS_HOST", "").strip()  # Host header для xhttp/ws
 VLESS_FINGERPRINT = os.getenv("VLESS_FINGERPRINT", "chrome").strip()
 VLESS_ALPN = os.getenv("VLESS_ALPN", "h2,http/1.1").strip()
-VLESS_REMARK = os.getenv("VLESS_REMARK", "K.O. Gateway VLESS").strip()
+VLESS_REMARK = os.getenv("VLESS_REMARK", "K.O. Gateway").strip()
 # Reality: public key (pbk), short id (sid), SNI и flow — обязательны для рабочей ссылки
 VLESS_PUBLIC_KEY = os.getenv("VLESS_PUBLIC_KEY", "").strip()
 VLESS_SHORT_ID = os.getenv("VLESS_SHORT_ID", "").strip()
@@ -207,9 +207,9 @@ VLESS_XHTTP_SC_MAX = _as_int("VLESS_XHTTP_SC_MAX", 32768)        # scMaxEachPost
 VLESS_XHTTP_SC_MIN_MS = _as_int("VLESS_XHTTP_SC_MIN_MS", 10)     # scMinPostsIntervalMs
 VLESS_XHTTP_INBOUND_TAG = os.getenv("VLESS_XHTTP_INBOUND_TAG", "vless-xhttp-in").strip()
 VLESS_XHTTP_INBOUND_PORT = _as_int("VLESS_XHTTP_INBOUND_PORT", 20500)
-VLESS_XHTTP_REMARK = os.getenv("VLESS_XHTTP_REMARK", "K.O. Gateway VLESS XHTTP").strip()
+VLESS_XHTTP_REMARK = os.getenv("VLESS_XHTTP_REMARK", "K.O. Gateway").strip()
 # Пары path:remark для VLESS-подписки (в Happ/v2ray раскрываются как отдельные серверы)
-VLESS_XHTTP_SUB_PATHS = os.getenv("VLESS_XHTTP_SUB_PATHS", "/xhttp:WDTT,/xhttp-of:OpenFlux").strip()
+VLESS_XHTTP_SUB_PATHS = os.getenv("VLESS_XHTTP_SUB_PATHS", "/xhttp:K.O. Gateway,/xhttp-of:K.O. Gateway (OpenFlux)").strip()
 # Одна общая VLESS-подписка (раскрывается в серверы в Happ/v2rayNG).
 # Если задана — в профиле пользователя вместо отдельных vless-ссылок отдаём только её.
 # Пример: https://<id>.containers.yandexcloud.net/vless-sub
