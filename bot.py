@@ -971,12 +971,13 @@ def _build_vless_url(remark: str | None = None, vless_uuid: str | None = None) -
     return f"vless://{uuid_value}@{server}:{port}?{query}#{remark_encoded}"
 
 
-def _build_vless_xhttp_url(remark: str | None = None, vless_uuid: str | None = None) -> str | None:
+def _build_vless_xhttp_url(remark: str | None = None, vless_uuid: str | None = None, path: str | None = None) -> str | None:
     """Генерирует VLESS+XHTTP ссылку для режима «белых списков» РФ.
 
     Формат: vless://uuid@<фронтенд-домен>:443?encryption=none&type=xhttp&security=tls
             &sni=<домен>&path=/xhttp&host=<домен>&mode=packet-up&uplinkDataPlacement=header…#remark
     SNI и Host — фронтенд-домен (traefik/nginx), за которым спрятан xray-инбаунд.
+    path — переопределяет VLESS_XHTTP_PATH (для подписки с несколькими серверами).
     """
     if not config.VLESS_ENABLED or not config.VLESS_XHTTP_ENABLED:
         return None
@@ -987,7 +988,7 @@ def _build_vless_xhttp_url(remark: str | None = None, vless_uuid: str | None = N
 
     uuid_value = (vless_uuid or config.VLESS_UUID).strip()
     port = config.VLESS_XHTTP_PORT
-    path = config.VLESS_XHTTP_PATH or "/xhttp"
+    path = (path or config.VLESS_XHTTP_PATH or "/xhttp").strip()
     name = remark or config.VLESS_XHTTP_REMARK
 
     params = [
@@ -1063,11 +1064,13 @@ async def _links_section(client, pwd: str, sub_id: str | None = None, include_vl
 
     # VLESS ссылка (добавляем первой, если включена)
     if include_vless and config.VLESS_ENABLED:
+        vless_uuid = await _customer_vless_uuid(pwd)
         if config.VLESS_SUB_URL:
             # Одна общая VLESS-подписка (в Happ/v2ray раскрывается в серверы)
-            parts.append(f"<b>🔐 VLESS подписка (Happ / v2ray)</b>\n<code>{html.escape(config.VLESS_SUB_URL)}</code>")
+            sub_url = config.VLESS_SUB_URL.replace("{uuid}", (vless_uuid or config.VLESS_UUID or "").strip())
+            parts.append(f"<b>🔐 VLESS подписка (Happ / v2ray)</b>\n<code>{html.escape(sub_url)}</code>")
         else:
-            vless_url = _build_vless_url(vless_uuid=await _customer_vless_uuid(pwd))
+            vless_url = _build_vless_url(vless_uuid=vless_uuid)
             if vless_url:
                 parts.append(f"<b>🔐 VLESS (Reality)</b>\n<code>{html.escape(vless_url)}</code>")
     
@@ -1112,11 +1115,11 @@ async def links_json(client, pwd: str, sub_id: str | None = None, include_vless:
 
     # VLESS ссылка
     if include_vless and config.VLESS_ENABLED:
+        vless_uuid = await _customer_vless_uuid(pwd)
         if config.VLESS_SUB_URL:
             # Одна общая подписка вместо отдельных ссылок (раскрывается в серверы в Happ/v2ray)
-            out["vless_sub"] = config.VLESS_SUB_URL
+            out["vless_sub"] = config.VLESS_SUB_URL.replace("{uuid}", (vless_uuid or config.VLESS_UUID or "").strip())
         else:
-            vless_uuid = await _customer_vless_uuid(pwd)
             vless_url = _build_vless_url(vless_uuid=vless_uuid)
             if vless_url:
                 out["vless"] = vless_url

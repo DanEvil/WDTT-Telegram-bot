@@ -208,9 +208,12 @@ VLESS_XHTTP_SC_MIN_MS = _as_int("VLESS_XHTTP_SC_MIN_MS", 10)     # scMinPostsInt
 VLESS_XHTTP_INBOUND_TAG = os.getenv("VLESS_XHTTP_INBOUND_TAG", "vless-xhttp-in").strip()
 VLESS_XHTTP_INBOUND_PORT = _as_int("VLESS_XHTTP_INBOUND_PORT", 20500)
 VLESS_XHTTP_REMARK = os.getenv("VLESS_XHTTP_REMARK", "K.O. Gateway VLESS XHTTP").strip()
+# Пары path:remark для VLESS-подписки (в Happ/v2ray раскрываются как отдельные серверы)
+VLESS_XHTTP_SUB_PATHS = os.getenv("VLESS_XHTTP_SUB_PATHS", "/xhttp:WDTT,/xhttp-of:OpenFlux").strip()
 # Одна общая VLESS-подписка (раскрывается в серверы в Happ/v2rayNG).
 # Если задана — в профиле пользователя вместо отдельных vless-ссылок отдаём только её.
 # Пример: https://<id>.containers.yandexcloud.net/vless-sub
+# Плейсхолдер {uuid} подставляет персональный UUID клиента (иначе — общий VLESS_UUID).
 VLESS_SUB_URL = os.getenv("VLESS_SUB_URL", "").strip()
 
 

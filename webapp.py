@@ -264,6 +264,35 @@ async def no_cache_mw(request: web.Request, handler):
     return resp
 
 
+async def vless_sub(request: web.Request) -> web.Response:
+    """GET /vless-sub?u=<uuid> — base64-подписка vless:// (Happ/v2ray показывает серверы списком).
+
+    Без параметра u используется общий VLESS_UUID из конфига.
+    Серверы: все path:remark из VLESS_XHTTP_SUB_PATHS + VLESS Reality (если включен).
+    """
+    import bot as b  # lazy: избегаем циклического импорта
+
+    u = (request.query.get("u") or request.query.get("uuid") or config.VLESS_UUID or "").strip()
+    links: list[str] = []
+    for pair in config.VLESS_XHTTP_SUB_PATHS.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        path, _, remark = pair.partition(":")
+        url = b._build_vless_xhttp_url(remark=remark.strip() or None, vless_uuid=u or None, path=path.strip() or None)
+        if url:
+            links.append(url)
+    reality = b._build_vless_url(remark="Reality", vless_uuid=u or None)
+    if reality:
+        links.append(reality)
+    if not links:
+        return web.Response(status=404, text="vless не настроен")
+    payload = base64.b64encode("\n".join(links).encode("utf-8")).decode("ascii")
+    return web.Response(text=payload, content_type="text/plain",
+                        headers={"Content-Disposition": "attachment; filename=sub.txt",
+                                 "Access-Control-Allow-Origin": "*"})
+
+
 def make_webapp() -> web.Application:
     app = web.Application(middlewares=[error_logger_mw, no_cache_mw])
     app.router.add_post("/api/auth", api_auth)
@@ -273,6 +302,7 @@ def make_webapp() -> web.Application:
     app.router.add_post("/api/pay/yookassa", api_pay_yookassa)
     app.router.add_get("/api/referrals", api_referrals)
     app.router.add_post("/api/check_payment", api_check_payment)
+    app.router.add_get("/vless-sub", vless_sub)
 
     # Единый API экосистемы /api/v1/* — общий с сайтом и будущими приложениями
     register_v1_routes(app)
