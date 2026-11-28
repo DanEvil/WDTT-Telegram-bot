@@ -260,7 +260,8 @@ async def no_cache_mw(request: web.Request, handler):
     """Telegram WebView агрессивно кэширует Mini App: без Cache-Control старый
     app.js показывается неделями после деплоя. Форсируем revalidate по ETag."""
     resp = await handler(request)
-    resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+    if "Cache-Control" not in resp.headers:
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate"
     return resp
 
 
