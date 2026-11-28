@@ -1,0 +1,41 @@
+{
+  "log": { "loglevel": "warning" },
+  "dns": {
+    "queryStrategy": "UseIP4",
+    "servers": [
+      { "address": "https://dns.yandex.net/dns-query", "domains": ["+."] , "skipFallback": false }
+    ]
+  },
+  "inbounds": [
+    {
+      "tag": "tun-in",
+      "protocol": "tun",
+      "listen": "127.0.0.1",
+      "mtu": 9000,
+      "settings": {
+        "autoRoute": true,
+        "strictRoute": true,
+        "stack": "gvisor",
+        "address": ["172.19.0.1/30"]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "openflux",
+      "protocol": "socks",
+      "settings": {
+        "servers": [
+          { "address": "127.0.0.1", "port": 1080 }
+        ]
+      }
+    },
+    { "tag": "direct", "protocol": "freedom", "settings": {} }
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      { "type": "field", "outboundTag": "openflux", "port": "0-65535" }
+    ]
+  }
+}
